@@ -41,6 +41,8 @@
 #   DomainName           - DNS domain for the VM hostname (default: 'int.hpedemo.se')
 #   EnableUEFI           - Boot firmware: $true = UEFI, $false = BIOS (default: $true)
 #   DiskSizeGB           - Root disk size in GB (default: 60)
+#   DatastoreId          - Morpheus datastore ID for the root volume (0 = auto-detect from existing instances)
+#   DatastoreName        - Optional datastore name filter used when auto-detecting (leave empty to pick the first available)
 #   StorageTypeId        - Morpheus storage type ID for the root volume (default: 1)
 #   LogPath              - Directory for the provisioning log file
 
@@ -71,6 +73,8 @@ param(
     [string]$DomainName          = 'int.hpedemo.se',
     [bool]$EnableUEFI            = $true,
     [int]$DiskSizeGB             = 80,
+    [int]$DatastoreId            = 0,
+    [string]$DatastoreName       = '',
     [int]$StorageTypeId          = 1,
     [string]$LogPath             = 'C:\Windows\Logs\MorpheusProvision'
 )
@@ -316,6 +320,37 @@ function Resolve-ResourcePoolId {
     return [int]$pool.id
 }
 
+function Resolve-DatastoreId {
+    param([int]$CloudId)
+
+    # If caller provided an explicit datastore ID, use it directly
+    if ($script:DatastoreId -gt 0) {
+        Write-Log "Using explicit DatastoreId=$($script:DatastoreId)." -Level SUCCESS
+        return $script:DatastoreId
+    }
+
+    Write-Log "Auto-detecting datastore (name filter: '$($script:DatastoreName)')..."
+
+    # Infer from existing provisioned instances in this cloud — read root volume datastoreId
+    $instResp = Invoke-MorpheusApi -Path '/api/instances' -Query @{ zoneId = $CloudId; max = '30' }
+    foreach ($inst in $instResp.instances) {
+        if ($inst.layout.name -ne $script:LayoutName) { continue }
+        $sid = $inst.servers | Select-Object -First 1
+        if (-not $sid) { continue }
+        try {
+            $srv = Invoke-MorpheusApi -Path "/api/servers/$sid"
+            $vol = $srv.server.volumes | Where-Object { $_.rootVolume } | Select-Object -First 1
+            if (-not $vol -or -not $vol.datastoreId) { continue }
+            if ($script:DatastoreName -and $vol.datastore?.name -ne $script:DatastoreName) { continue }
+            Write-Log "Datastore detected from instance '$($inst.name)': id=$($vol.datastoreId)  name=$($vol.datastore?.name)" -Level SUCCESS
+            return [int]$vol.datastoreId
+        }
+        catch { continue }
+    }
+
+    throw "Could not auto-detect a datastore from existing instances. Use -DatastoreId to provide it directly."
+}
+
 function Resolve-NetworkId {
     param([int]$CloudId, [int]$ProvisionTypeId)
     Write-Log "Resolving network '$script:NetworkName'..."
@@ -368,6 +403,8 @@ $script:LayoutId          = $LayoutId
 $script:ProvisionTypeCode = $ProvisionTypeCode
 $script:PlanName          = $PlanName
 $script:NetworkName       = $NetworkName
+$script:DatastoreId       = $DatastoreId
+$script:DatastoreName     = $DatastoreName
 
 Write-Log ('─' * 70)
 Write-Log 'New-MorpheusWindowsVM  —  VM Provisioning'
@@ -395,6 +432,7 @@ $imageId         = Resolve-VirtualImageId
 $layoutId        = Resolve-LayoutId -CloudId $cloudId
 $planId          = Resolve-ServicePlanId -CloudId $cloudId -LayoutId $layoutId
 $resourcePoolId  = Resolve-ResourcePoolId -CloudId $cloudId
+$datastoreId     = Resolve-DatastoreId -CloudId $cloudId
 $networkId       = Resolve-NetworkId -CloudId $cloudId -ProvisionTypeId $provisionTypeId
 
 # Generate unique VM name: prefix + exactly 5 random digits
@@ -441,7 +479,7 @@ $provisionBody = @{
             name        = 'root'
             size        = $DiskSizeGB
             storageType = $StorageTypeId
-            datastoreId = 'auto'
+            datastoreId = $datastoreId
         }
     )
 }

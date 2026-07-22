@@ -7,7 +7,21 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
-## [1.2.0] — 2026-07-22
+## [1.3.0] — 2026-07-22
+
+### Fixed
+
+- **Root cause of "Error running vm"**: root disk was not assigned to any datastore because `datastoreId='auto'` in the volume spec is not resolved by Morpheus. The VM was created but QEMU had no backing storage, so it failed to start.
+
+### Added
+
+- `Resolve-DatastoreId` function: iterates existing provisioned instances in the same cloud and layout, reads the root volume's `datastoreId` from each server record, and returns the first match. Skips instances whose volume has no datastore (i.e., the previously broken VMs).
+- `-DatastoreId` parameter (default `0` = auto-detect) — override with an explicit integer ID to skip instance scanning entirely.
+- `-DatastoreName` parameter (default empty) — optional name filter applied during auto-detection to prefer a specific datastore by name.
+
+---
+
+
 
 ### Fixed
 

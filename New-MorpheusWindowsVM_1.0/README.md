@@ -47,6 +47,8 @@ This provisions a VM named `AAA-NNNNN` (5 random digits) using all default setti
 | `DomainName` | | `int.hpedemo.se` | DNS domain for the VM hostname. |
 | `EnableUEFI` | | `$true` | `$true` = UEFI firmware, `$false` = Legacy BIOS. |
 | `DiskSizeGB` | | `80` | Root disk size in GB. Must be ≥ the image minimum (~65 GB for the default image). |
+| `DatastoreId` | | `0` | Root volume datastore ID (0 = auto-detect from existing instances in the same cloud and layout). |
+| `DatastoreName` | | `` | Optional datastore name filter used during auto-detection. Leave empty to accept the first available. |
 | `StorageTypeId` | | `1` | Morpheus storage type ID for the root volume. |
 | `LogPath` | | `C:\Windows\Logs\MorpheusProvision` | Directory for the log file. |
 
