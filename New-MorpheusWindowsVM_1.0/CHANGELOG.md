@@ -7,6 +7,25 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [1.4.0] — 2026-07-22
+
+### Added
+
+- **Instance Wiki documentation**: after a successful (non-`-WhatIf`) provisioning request, the script now writes a Wiki page to the new instance with three sections:
+  1. Provisioning Info — date/time (local + UTC) and who ran the script (via `GET /api/whoami`)
+  2. Source Image — image name and settings (OS type, format, minimum disk, Sysprep/Cloud-Init, UEFI/TPM/Secure Boot, storage provider)
+  3. Deployment Settings — cloud, group, instance type, layout, plan, network, domain, firmware, disk size, datastore ID, resource pool ID
+- `Get-CurrentMorpheusUser` function — resolves the token owner via `/api/whoami`
+- `Set-InstanceWikiPage` function — creates or updates (idempotent) the Wiki page via `/api/wiki/pages`; content format is Markdown
+
+### Changed
+
+- `Resolve-VirtualImageId` now returns the full virtual image object (previously only the ID) so its properties can be used in the Wiki page
+- The Wiki page write is best-effort: any failure (API error, permissions, etc.) is logged as a warning and does not fail the script, since the VM has already been provisioned successfully by that point
+- Note: `GET /api/wiki/pages` does not honor `refType`/`refId` query filters on this server — the script fetches all pages and filters client-side to find an existing page for the instance
+
+---
+
 ## [1.3.0] — 2026-07-22
 
 ### Fixed

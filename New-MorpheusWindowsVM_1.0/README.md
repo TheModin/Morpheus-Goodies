@@ -73,7 +73,7 @@ $token = Read-Host -AsSecureString 'Morpheus API token'
     -MorpheusServer      'morpheus.example.com' `
     -MorpheusToken       $token `
     -InstanceNamePrefix  'PROD-' `
-    -PlanName            '8 CPU , 16GB Memory'
+    -PlanName            '8 CPU, 16GB Memory'
 ```
 
 ### Skip SSL (lab/dev only)
@@ -110,7 +110,10 @@ The script calls the following Morpheus API endpoints to translate names into ID
 | Service plan | `GET /api/service-plans?zoneId={cloudId}&layoutId={layoutId}` |
 | Resource pool | `GET /api/zones/{cloudId}/resource-pools` (uses first available) |
 | Network | `GET /api/options/zoneNetworkOptions?zoneId={cloudId}&provisionTypeId={id}` |
+| Datastore | Auto-detected from an existing instance's root volume; override with `-DatastoreId` |
 | **Version check** | `GET /api/setup/check` (unauthenticated, v9+) |
+| **Current user** (for Wiki) | `GET /api/whoami` |
+| **Instance Wiki page** | `GET/POST/PUT /api/wiki/pages` |
 
 ---
 
@@ -127,9 +130,31 @@ URL           : https://morpheus.example.com/#/provisioning/instances/42
 
 ---
 
+## Instance Wiki documentation
+
+After a successful (non-`-WhatIf`) provisioning request, the script writes a
+Wiki page to the new instance in Morpheus (visible on the instance's **Wiki**
+tab) with three sections:
+
+1. **Provisioning Info** — date/time provisioned (local + UTC) and who ran
+   the script (resolved via `GET /api/whoami`)
+2. **Source Image** — the image name and its relevant settings (OS type,
+   image format, minimum disk, Sysprep/Cloud-Init flags, UEFI/TPM/Secure
+   Boot capability, storage provider)
+3. **Deployment Settings** — the actual settings used for this VM (cloud,
+   group, instance type, layout, plan, network, domain, firmware, disk size,
+   datastore ID, resource pool ID if used)
+
+The page is created if none exists for the instance, or updated in place if
+run again against the same instance ID. This step is **best-effort**: if the
+Wiki API call fails for any reason, the script logs a warning and continues
+— it never fails an otherwise-successful deployment.
+
+---
+
 ## Notes
 
 - **Fire-and-forget**: The script returns as soon as the provisioning request is accepted. Monitor provisioning progress in the Morpheus UI or via `GET /api/instances/{id}`.
-- **PlanName must match exactly**: The space before the comma in `4 CPU , 8GB Memory` is intentional and must match the plan name in Morpheus exactly.
+- **PlanName must match exactly**: it must match the plan name in Morpheus exactly (e.g. `4 CPU, 8GB Memory`).
 - **StorageTypeId**: If the default `1` is invalid in your environment, find valid IDs via `GET /api/provision-types/{kvm_id}` and check `storageTypes[].id`.
 - **UEFI**: Stored as `config.firmware = "uefi"`. If UEFI is not applying, your Morpheus version may use a different optionType field — check the layout's optionTypes via `GET /api/library/layouts/{layoutId}`.

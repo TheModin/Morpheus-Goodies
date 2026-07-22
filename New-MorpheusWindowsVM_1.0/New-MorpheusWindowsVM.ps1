@@ -17,6 +17,9 @@
 #   9. Resolves the network by name via zone network options → networkId
 #  10. Generates a unique instance name: <Prefix><5 random digits>
 #  11. POSTs to /api/instances and logs the result
+#  12. Writes/updates a Wiki page on the new instance documenting who/when it
+#      was provisioned, the source image's settings, and the deployment
+#      settings used (best-effort — failures here do not fail the script)
 #
 # Requirements:
 #   - PowerShell 7.0+
@@ -237,7 +240,7 @@ function Resolve-VirtualImageId {
     $img  = $resp.virtualImages | Where-Object { $_.name -eq $script:ImageName } | Select-Object -First 1
     if (-not $img) { throw "Virtual image '$script:ImageName' not found." }
     Write-Log "Virtual image resolved: id=$($img.id)" -Level SUCCESS
-    return [int]$img.id
+    return $img
 }
 
 function Resolve-LayoutId {
@@ -388,6 +391,111 @@ function Resolve-NetworkId {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Instance Wiki documentation
+# ═══════════════════════════════════════════════════════════════════════════════
+
+function Get-CurrentMorpheusUser {
+    # Best-effort — the wiki page is still written (with an "Unknown" author)
+    # if this call fails, since it should never block a successful deployment.
+    try {
+        $resp = Invoke-MorpheusApi -Path '/api/whoami'
+        return $resp.user
+    }
+    catch {
+        Write-Log "Could not resolve current Morpheus user via /api/whoami: $($_.Exception.Message)" -Level WARN
+        return $null
+    }
+}
+
+function Set-InstanceWikiPage {
+    param(
+        [Parameter(Mandatory)][int]$InstanceId,
+        [Parameter(Mandatory)][string]$InstanceName,
+        [Parameter(Mandatory)]$Image,
+        [Parameter(Mandatory)][hashtable]$DeploymentSettings
+    )
+
+    Write-Log "Writing instance Wiki page for '$InstanceName'..."
+
+    $user        = Get-CurrentMorpheusUser
+    $provisioner = if ($user) { "$($user.displayName) ($($user.username))" } else { 'Unknown' }
+    $localTime   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $utcTime     = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+
+    # ── Section 1: Provisioning Info ──────────────────────────────────────
+    $provisioningInfo = @(
+        '## Provisioning Info'
+        "- **Provisioned on:** $localTime (local) / $utcTime (UTC)"
+        "- **Provisioned by:** $provisioner"
+        "- **Script:** New-MorpheusWindowsVM.ps1"
+    ) -join "`n"
+
+    # ── Section 2: Source Image ────────────────────────────────────────────
+    $imageLines = [System.Collections.Generic.List[string]]::new()
+    $imageLines.Add('## Source Image')
+    $imageLines.Add("- **Name:** $($Image.name)")
+    if ($Image.osType?.name)  { $imageLines.Add("- **OS type:** $($Image.osType.name)") }
+    if ($Image.imageType)     { $imageLines.Add("- **Image format:** $($Image.imageType)") }
+    if ($Image.minDiskGB)     { $imageLines.Add("- **Minimum disk:** $($Image.minDiskGB) GB") }
+    if ($Image.minRamGB)      { $imageLines.Add("- **Minimum RAM:** $($Image.minRamGB) GB") }
+    $imageLines.Add("- **Sysprep:** $([bool]$Image.isSysprep)")
+    $imageLines.Add("- **Cloud-Init:** $([bool]$Image.isCloudInit)")
+    $imageLines.Add("- **UEFI-capable:** $([bool]$Image.uefi)")
+    if ($null -ne $Image.tpm)            { $imageLines.Add("- **TPM:** $([bool]$Image.tpm)") }
+    if ($null -ne $Image.secureBoot)     { $imageLines.Add("- **Secure Boot:** $([bool]$Image.secureBoot)") }
+    if ($Image.storageProvider) {
+        $storageProviderName = if ($Image.storageProvider -is [string]) { $Image.storageProvider } else { $Image.storageProvider.name }
+        $imageLines.Add("- **Storage provider:** $storageProviderName")
+    }
+    $sourceImage = $imageLines -join "`n"
+
+    # ── Section 3: Deployment Settings ─────────────────────────────────────
+    $deployLines = [System.Collections.Generic.List[string]]::new()
+    $deployLines.Add('## Deployment Settings')
+    $deployLines.Add("- **Instance name:** $InstanceName")
+    foreach ($key in $DeploymentSettings.Keys) {
+        $deployLines.Add("- **${key}:** $($DeploymentSettings[$key])")
+    }
+    $deploymentSettingsText = $deployLines -join "`n"
+
+    $content = "$provisioningInfo`n`n$sourceImage`n`n$deploymentSettingsText"
+
+    try {
+        # The Wiki list endpoint does not honor refType/refId query filters —
+        # fetch all pages and filter client-side to find an existing page.
+        $existingResp = Invoke-MorpheusApi -Path '/api/wiki/pages' -Query @{ max = '1000' }
+        $existing     = $existingResp.pages |
+            Where-Object { $_.refType -eq 'Instance' -and $_.refId -eq $InstanceId } |
+            Select-Object -First 1
+
+        if ($existing) {
+            $body = @{ page = @{ name = $InstanceName; content = $content; format = 'markdown' } }
+            Invoke-MorpheusApi -Path "/api/wiki/pages/$($existing.id)" -Method PUT -Body $body | Out-Null
+            Write-Log "Instance Wiki page updated (id=$($existing.id))." -Level SUCCESS
+        }
+        else {
+            $body = @{
+                page = @{
+                    name     = $InstanceName
+                    category = 'instances'
+                    refId    = $InstanceId
+                    refType  = 'Instance'
+                    format   = 'markdown'
+                    content  = $content
+                }
+            }
+            $created = Invoke-MorpheusApi -Path '/api/wiki/pages' -Method POST -Body $body
+            Write-Log "Instance Wiki page created (id=$($created.page.id))." -Level SUCCESS
+        }
+    }
+    catch {
+        # The VM is already provisioned at this point — a wiki failure must
+        # never be treated as fatal, so warn and continue.
+        Write-Log "Could not write instance Wiki page: $($_.Exception.Message)" -Level WARN
+    }
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Main execution
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -428,7 +536,8 @@ $cloud           = Resolve-Cloud
 $cloudId         = [int]$cloud.id
 $groupId         = Resolve-GroupId
 $provisionTypeId = Resolve-ProvisionTypeId
-$imageId         = Resolve-VirtualImageId
+$image           = Resolve-VirtualImageId
+$imageId         = [int]$image.id
 $layoutId        = Resolve-LayoutId -CloudId $cloudId
 $planId          = Resolve-ServicePlanId -CloudId $cloudId -LayoutId $layoutId
 $resourcePoolId  = Resolve-ResourcePoolId -CloudId $cloudId
@@ -498,6 +607,24 @@ if ($PSCmdlet.ShouldProcess($instanceName, 'Provision Morpheus VM')) {
     Write-Log "  Status        : $($instance.status)"
     Write-Log "  URL           : https://$MorpheusServer/#/provisioning/instances/$($instance.id)"
     Write-Log ('─' * 70)
+
+    # Document the provisioning event on the instance Wiki page (best-effort)
+    $deploymentSettings = [ordered]@{
+        Cloud            = $CloudName
+        Group            = $GroupName
+        'Instance Type'  = $InstanceTypeCode
+        Layout           = $LayoutName
+        Plan             = $PlanName
+        Network          = $NetworkName
+        Domain           = $DomainName
+        Firmware         = if ($EnableUEFI) { 'UEFI' } else { 'BIOS' }
+        'Disk Size (GB)' = $DiskSizeGB
+        'Datastore ID'   = $datastoreId
+    }
+    if ($null -ne $resourcePoolId) { $deploymentSettings['Resource Pool ID'] = $resourcePoolId }
+
+    Set-InstanceWikiPage -InstanceId ([int]$instance.id) -InstanceName $instance.name `
+        -Image $image -DeploymentSettings $deploymentSettings
 
     return [pscustomobject]@{
         Name   = $instance.name
