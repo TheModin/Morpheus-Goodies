@@ -7,6 +7,17 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [1.6.0] — 2026-07-23
+
+### Added
+
+- The Wiki page's **Source Image** section now includes an **Advanced** subsection covering the image's Advanced-tab settings: "Is Cloud Init Enabled?", "Cloud Guest Customization?", "Sysprepped / Generalized Image?", "Install Agent?", plus any other simple (boolean/string/number) property found on the image that isn't already shown elsewhere in the section — so the Wiki page reflects the image's Advanced options without hardcoding every possible field name.
+- `Resolve-VirtualImageId` now fetches the full image detail via `GET /api/virtual-images/{id}` after resolving the ID from the name search, since the list endpoint returns a trimmed object that often lacks Advanced-tab fields. Falls back to the (trimmed) list object with a warning if the detail call fails — never fails the script.
+
+### Notes
+
+- Property names for "Cloud Guest Customization?" and "Install Agent?" vary across Morpheus versions; the script checks several plausible aliases (`isForceCustomization`/`guestCustomization`/`cloudInitGuestCustomization`, `installAgent`/`noAgent`) and falls back to a generic catch-all list of remaining image properties as a safety net. Recommend verifying the rendered Wiki page against a live server after upgrading.
+
 ## [1.5.0] — 2026-07-23
 
 ### Changed

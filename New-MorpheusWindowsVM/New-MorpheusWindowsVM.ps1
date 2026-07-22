@@ -240,6 +240,17 @@ function Resolve-VirtualImageId {
     $resp = Invoke-MorpheusApi -Path '/api/virtual-images' -Query @{ name = $script:ImageName; max = '5' }
     $img  = $resp.virtualImages | Where-Object { $_.name -eq $script:ImageName } | Select-Object -First 1
     if (-not $img) { throw "Virtual image '$script:ImageName' not found." }
+
+    # The list endpoint returns a trimmed object — fetch the full detail so the
+    # instance Wiki page can include the image's Advanced-tab settings.
+    try {
+        $detailResp = Invoke-MorpheusApi -Path "/api/virtual-images/$($img.id)"
+        if ($detailResp.virtualImage) { $img = $detailResp.virtualImage }
+    }
+    catch {
+        Write-Log "Could not fetch full virtual image detail (id=$($img.id)): $($_.Exception.Message) — Wiki 'Advanced' section may be incomplete." -Level WARN
+    }
+
     Write-Log "Virtual image resolved: id=$($img.id)" -Level SUCCESS
     return $img
 }
@@ -462,6 +473,63 @@ function Set-InstanceWikiPage {
         $storageProviderName = if ($Image.storageProvider -is [string]) { $Image.storageProvider } else { $Image.storageProvider.name }
         $imageLines.Add("- **Storage provider:** $storageProviderName")
     }
+
+    # ── Advanced image settings (from the image's "Advanced" tab) ─────────
+    # Property names for these vary across Morpheus versions/editions, so
+    # each requested setting checks a short list of plausible aliases and
+    # renders whichever one is actually present on the resolved image object.
+    $imageLines.Add('')
+    $imageLines.Add('### Advanced')
+
+    $advancedFields = [ordered]@{
+        'Is Cloud Init Enabled?'          = @('isCloudInit')
+        'Cloud Guest Customization?'      = @('isForceCustomization', 'guestCustomization', 'cloudInitGuestCustomization', 'forceCustomization')
+        'Sysprepped / Generalized Image?' = @('isSysprep')
+        'Install Agent?'                  = @('installAgent')
+    }
+    $shownImageProps = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+    foreach ($label in $advancedFields.Keys) {
+        $shown = $false
+        foreach ($prop in $advancedFields[$label]) {
+            if ($Image.PSObject.Properties.Name -contains $prop -and $null -ne $Image.$prop) {
+                $val = $Image.$prop
+                $display = if ($val -is [bool]) { [bool]$val } else { $val }
+                $imageLines.Add("- **${label}** $display")
+                [void]$shownImageProps.Add($prop)
+                $shown = $true
+                break
+            }
+        }
+        # 'Install Agent?' may be exposed inverted as 'noAgent' on some versions
+        if (-not $shown -and $label -eq 'Install Agent?' -and $Image.PSObject.Properties.Name -contains 'noAgent') {
+            $imageLines.Add("- **${label}** $(-not [bool]$Image.noAgent)")
+            [void]$shownImageProps.Add('noAgent')
+        }
+    }
+
+    # Catch-all: any other simple (bool/string/number) top-level image
+    # property not already shown above, so no Advanced-tab setting is missed
+    # even if the exact schema differs from the aliases guessed above.
+    $imageDenylist = @(
+        'id', 'name', 'code', 'category', 'imageType', 'osType', 'minDiskGB', 'minRamGB',
+        'uefi', 'tpm', 'secureBoot', 'storageProvider', 'dateCreated', 'lastUpdated',
+        'externalId', 'accountId', 'tenantId', 'owner', 'account', 'region', 'bucket',
+        'key', 'config', 'refType', 'refId', 'deleted', 'systemImage', 'uniqueId',
+        'remotePath', 'imagePath', 'externalType', 'internalId', 'visibility'
+    ) + @($shownImageProps)
+
+    foreach ($prop in $Image.PSObject.Properties) {
+        if ($imageDenylist -contains $prop.Name) { continue }
+        $val = $prop.Value
+        if ($null -eq $val) { continue }
+        if ($val -isnot [bool] -and $val -isnot [string] -and $val -isnot [int] -and $val -isnot [long]) { continue }
+        if ($val -is [string] -and ($val.Length -eq 0 -or $val.Length -gt 60)) { continue }
+        $label = ($prop.Name -creplace '([a-z0-9])([A-Z])', '$1 $2')
+        $label = (Get-Culture).TextInfo.ToTitleCase($label.ToLower())
+        $imageLines.Add("- **${label}:** $val")
+    }
+
     $sourceImage = $imageLines -join "`n"
 
     # ── Section 3: Deployment Settings ─────────────────────────────────────

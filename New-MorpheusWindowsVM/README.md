@@ -140,7 +140,11 @@ tab) with three sections:
    the script (resolved via `GET /api/whoami`)
 2. **Source Image** — the image name and its relevant settings (OS type,
    image format, minimum disk, Sysprep/Cloud-Init flags, UEFI/TPM/Secure
-   Boot capability, storage provider)
+   Boot capability, storage provider), plus an **Advanced** subsection with
+   "Is Cloud Init Enabled?", "Cloud Guest Customization?",
+   "Sysprepped / Generalized Image?", "Install Agent?", and any other
+   Advanced-tab settings found on the image (best-effort — exact fields
+   depend on the Morpheus version)
 3. **Deployment Settings** — the actual settings used for this VM (cloud,
    group, instance type, layout, plan, network, domain, firmware, disk size,
    datastore name, resource pool ID if used)
