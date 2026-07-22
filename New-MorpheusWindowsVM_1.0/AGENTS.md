@@ -35,6 +35,7 @@ Must print `PARSE_OK`. Fix any errors before running the script.
 
 Key functions:
 
+- `Test-MorpheusVersion` — calls `GET /api/setup/check`, parses `appVersion`, throws if major < 9; warns and continues if endpoint is unreachable
 - `Invoke-MorpheusApi` — decrypts SecureString token per request, zeroes BSTR after use, handles query parameters and JSON body
 - `Resolve-Cloud` — returns the full cloud object (not just ID); callers read `.id` and `.zoneType.code`
 - `Resolve-ProvisionTypeId` — calls `GET /api/provision-types?code={code}`, returns numeric ID
@@ -80,6 +81,7 @@ $networkId = if ($network.id -is [string] -and $network.id -match '^network-') {
 
 | Purpose | Method | Path |
 |---------|--------|------|
+| Version check | GET | `/api/setup/check` (unauthenticated) |
 | List clouds | GET | `/api/zones?name={name}` |
 | List groups | GET | `/api/groups?name={name}` |
 | List provision types | GET | `/api/provision-types?code={code}` |

@@ -20,6 +20,7 @@
 #
 # Requirements:
 #   - PowerShell 7.0+
+#   - HPE Morpheus VM Essentials 9.0 or later
 #   - Network access to the Morpheus server
 #   - A Morpheus API bearer token with provisioning permissions
 #
@@ -138,6 +139,43 @@ function Invoke-MorpheusApi {
         $errMsg     = $null
         try { $errMsg = ($_.ErrorDetails.Message | ConvertFrom-Json).message } catch {}
         throw "Morpheus API $Method $Path failed (HTTP $statusCode): $($errMsg ?? $_.Exception.Message)"
+    }
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Version gate — requires Morpheus 9.0+
+# ═══════════════════════════════════════════════════════════════════════════════
+
+function Test-MorpheusVersion {
+    # GET /api/setup/check is unauthenticated and returns appVersion in all v9+ builds.
+    # If the endpoint is unavailable (older builds, firewalls) we warn and continue —
+    # failing here should never block a deployment unnecessarily.
+    Write-Log "Checking Morpheus server version (requires 9.0+)..."
+    try {
+        $resp = Invoke-RestMethod `
+            -Uri                  "https://$script:MorpheusServer/api/setup/check" `
+            -Method               GET `
+            -SkipCertificateCheck:$script:MorpheusSkipSSL `
+            -TimeoutSec           10
+        $appVersion = $resp.appVersion ?? $resp.version
+        if (-not $appVersion) {
+            Write-Log "Version check: /api/setup/check responded but contained no appVersion field — skipping version gate." -Level WARN
+            return
+        }
+        # Parse major version from strings like "9.0.1-123" or "9.0.1"
+        $major = [int]($appVersion -split '[.\-]')[0]
+        if ($major -lt 9) {
+            throw "This script requires HPE Morpheus 9.0 or later. Detected version: $appVersion"
+        }
+        Write-Log "Morpheus version: $appVersion  ✓ (meets 9.0+ requirement)" -Level SUCCESS
+    }
+    catch [System.Net.Http.HttpRequestException] {
+        Write-Log "Version check: /api/setup/check unreachable — skipping version gate." -Level WARN
+    }
+    catch {
+        # Re-throw only if it's the version mismatch we raised above
+        if ($_.Exception.Message -match 'requires HPE Morpheus') { throw }
+        Write-Log "Version check: unexpected response from /api/setup/check — skipping version gate. ($($_.Exception.Message))" -Level WARN
     }
 }
 
@@ -294,6 +332,9 @@ Write-Log "Domain         : $DomainName"
 Write-Log "UEFI           : $EnableUEFI"
 Write-Log "Name prefix    : $InstanceNamePrefix"
 Write-Log ('─' * 70)
+
+# Gate: verify Morpheus 9.0+
+Test-MorpheusVersion
 
 # Resolve all required IDs
 $cloud           = Resolve-Cloud

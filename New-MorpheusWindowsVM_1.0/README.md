@@ -7,6 +7,7 @@ A PowerShell 7 script that provisions a Windows VM in **HPE Morpheus VM Essentia
 ## Requirements
 
 - PowerShell 7.0+
+- **HPE Morpheus VM Essentials 9.0 or later** — the script checks the server version at startup and fails fast on older builds
 - Network access to the Morpheus VM Essentials server
 - A Morpheus API bearer token with provisioning permissions
 
@@ -106,6 +107,7 @@ The script calls the following Morpheus API endpoints to translate names into ID
 | Service plan | `GET /api/service-plans?zoneId={cloudId}&layoutId={layoutId}` |
 | Resource pool | `GET /api/zones/{cloudId}/resource-pools` (uses first available) |
 | Network | `GET /api/options/zoneNetworkOptions?zoneId={cloudId}&provisionTypeId={id}` |
+| **Version check** | `GET /api/setup/check` (unauthenticated, v9+) |
 
 ---
 

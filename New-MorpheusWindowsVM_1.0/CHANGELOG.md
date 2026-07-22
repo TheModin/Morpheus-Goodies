@@ -7,6 +7,19 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [1.1.0] — 2026-07-22
+
+### Added
+
+- Runtime version check: calls `GET /api/setup/check` at startup and fails with a clear error if the Morpheus server is older than 9.0. If the endpoint is unreachable (firewall, restricted environment) the check is skipped with a warning so deployments are never blocked unnecessarily.
+- `Test-MorpheusVersion` function added after `Invoke-MorpheusApi`
+
+### Changed
+
+- Script header and README updated to document the Morpheus 9.0+ requirement
+
+---
+
 ## [1.0.0] — 2026-07-22
 
 ### Added
