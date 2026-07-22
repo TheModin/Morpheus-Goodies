@@ -44,8 +44,9 @@
 #   DomainName           - DNS domain for the VM hostname (default: 'int.hpedemo.se')
 #   EnableUEFI           - Boot firmware: $true = UEFI, $false = BIOS (default: $true)
 #   DiskSizeGB           - Root disk size in GB (default: 60)
-#   DatastoreId          - Morpheus datastore ID for the root volume (0 = auto-detect from existing instances)
-#   DatastoreName        - Optional datastore name filter used when auto-detecting (leave empty to pick the first available)
+#   DatastoreId          - Morpheus datastore ID for the root volume (default: 4). If this ID does not
+#                          exist on the target server, the user is prompted to pick one from a list.
+#   DatastoreName        - Optional datastore name filter applied to the interactive selection list (leave empty to show all)
 #   StorageTypeId        - Morpheus storage type ID for the root volume (default: 1)
 #   LogPath              - Directory for the provisioning log file
 
@@ -76,7 +77,7 @@ param(
     [string]$DomainName          = 'int.hpedemo.se',
     [bool]$EnableUEFI            = $true,
     [int]$DiskSizeGB             = 80,
-    [int]$DatastoreId            = 0,
+    [int]$DatastoreId            = 4,
     [string]$DatastoreName       = '',
     [int]$StorageTypeId          = 1,
     [string]$LogPath             = 'C:\Windows\Logs\MorpheusProvision'
@@ -326,32 +327,46 @@ function Resolve-ResourcePoolId {
 function Resolve-DatastoreId {
     param([int]$CloudId)
 
-    # If caller provided an explicit datastore ID, use it directly
+    # Try the requested datastore ID directly first (default is 4, overridable via -DatastoreId)
     if ($script:DatastoreId -gt 0) {
-        Write-Log "Using explicit DatastoreId=$($script:DatastoreId)." -Level SUCCESS
-        return $script:DatastoreId
-    }
-
-    Write-Log "Auto-detecting datastore (name filter: '$($script:DatastoreName)')..."
-
-    # Infer from existing provisioned instances in this cloud — read root volume datastoreId
-    $instResp = Invoke-MorpheusApi -Path '/api/instances' -Query @{ zoneId = $CloudId; max = '30' }
-    foreach ($inst in $instResp.instances) {
-        if ($inst.layout.name -ne $script:LayoutName) { continue }
-        $sid = $inst.servers | Select-Object -First 1
-        if (-not $sid) { continue }
         try {
-            $srv = Invoke-MorpheusApi -Path "/api/servers/$sid"
-            $vol = $srv.server.volumes | Where-Object { $_.rootVolume } | Select-Object -First 1
-            if (-not $vol -or -not $vol.datastoreId) { continue }
-            if ($script:DatastoreName -and $vol.datastore?.name -ne $script:DatastoreName) { continue }
-            Write-Log "Datastore detected from instance '$($inst.name)': id=$($vol.datastoreId)  name=$($vol.datastore?.name)" -Level SUCCESS
-            return [int]$vol.datastoreId
+            $resp = Invoke-MorpheusApi -Path "/api/storage-datastores/$($script:DatastoreId)"
+            $ds   = $resp.datastore
+            if ($ds) {
+                Write-Log "Using datastore id=$($ds.id) name='$($ds.name)'." -Level SUCCESS
+                return [pscustomobject]@{ Id = [int]$ds.id; Name = $ds.name }
+            }
         }
-        catch { continue }
+        catch {
+            Write-Log "Datastore id=$($script:DatastoreId) not found or inaccessible ($($_.Exception.Message)) — showing available datastores instead." -Level WARN
+        }
     }
 
-    throw "Could not auto-detect a datastore from existing instances. Use -DatastoreId to provide it directly."
+    # Fall back: list available datastores and let the user pick one interactively
+    Write-Log "Fetching available datastores for selection..."
+    $listResp  = Invoke-MorpheusApi -Path '/api/storage-datastores' -Query @{ max = '100' }
+    $datastores = @($listResp.datastores)
+    if ($script:DatastoreName) {
+        $datastores = @($datastores | Where-Object { $_.name -eq $script:DatastoreName })
+    }
+    if (-not $datastores -or $datastores.Count -eq 0) {
+        throw "No datastores available to select from. Use -DatastoreId to provide a valid datastore ID directly."
+    }
+
+    Write-Host ''
+    Write-Host 'Available datastores:' -ForegroundColor Cyan
+    for ($i = 0; $i -lt $datastores.Count; $i++) {
+        Write-Host ("  [{0}] id={1}  name={2}" -f ($i + 1), $datastores[$i].id, $datastores[$i].name)
+    }
+    Write-Host ''
+
+    do {
+        $selection = Read-Host "Select a datastore [1-$($datastores.Count)]"
+    } until ($selection -match '^\d+$' -and [int]$selection -ge 1 -and [int]$selection -le $datastores.Count)
+
+    $chosen = $datastores[[int]$selection - 1]
+    Write-Log "Datastore selected interactively: id=$($chosen.id) name='$($chosen.name)'." -Level SUCCESS
+    return [pscustomobject]@{ Id = [int]$chosen.id; Name = $chosen.name }
 }
 
 function Resolve-NetworkId {
@@ -541,7 +556,8 @@ $imageId         = [int]$image.id
 $layoutId        = Resolve-LayoutId -CloudId $cloudId
 $planId          = Resolve-ServicePlanId -CloudId $cloudId -LayoutId $layoutId
 $resourcePoolId  = Resolve-ResourcePoolId -CloudId $cloudId
-$datastoreId     = Resolve-DatastoreId -CloudId $cloudId
+$datastore       = Resolve-DatastoreId -CloudId $cloudId
+$datastoreId     = $datastore.Id
 $networkId       = Resolve-NetworkId -CloudId $cloudId -ProvisionTypeId $provisionTypeId
 
 # Generate unique VM name: prefix + exactly 5 random digits
@@ -619,7 +635,7 @@ if ($PSCmdlet.ShouldProcess($instanceName, 'Provision Morpheus VM')) {
         Domain           = $DomainName
         Firmware         = if ($EnableUEFI) { 'UEFI' } else { 'BIOS' }
         'Disk Size (GB)' = $DiskSizeGB
-        'Datastore ID'   = $datastoreId
+        'Datastore'      = "$($datastore.Name) (id=$($datastore.Id))"
     }
     if ($null -ne $resourcePoolId) { $deploymentSettings['Resource Pool ID'] = $resourcePoolId }
 

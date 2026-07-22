@@ -47,8 +47,8 @@ This provisions a VM named `AAA-NNNNN` (5 random digits) using all default setti
 | `DomainName` | | `int.hpedemo.se` | DNS domain for the VM hostname. |
 | `EnableUEFI` | | `$true` | `$true` = UEFI firmware, `$false` = Legacy BIOS. |
 | `DiskSizeGB` | | `80` | Root disk size in GB. Must be ≥ the image minimum (~65 GB for the default image). |
-| `DatastoreId` | | `0` | Root volume datastore ID (0 = auto-detect from existing instances in the same cloud and layout). |
-| `DatastoreName` | | `` | Optional datastore name filter used during auto-detection. Leave empty to accept the first available. |
+| `DatastoreId` | | `4` | Root volume datastore ID. If this ID doesn't exist on the target server, the script prompts you to pick one from a list of available datastores. |
+| `DatastoreName` | | `` | Optional name filter applied to the interactive datastore selection list. Leave empty to show all available datastores. |
 | `StorageTypeId` | | `1` | Morpheus storage type ID for the root volume. |
 | `LogPath` | | `C:\Windows\Logs\MorpheusProvision` | Directory for the log file. |
 
@@ -110,7 +110,7 @@ The script calls the following Morpheus API endpoints to translate names into ID
 | Service plan | `GET /api/service-plans?zoneId={cloudId}&layoutId={layoutId}` |
 | Resource pool | `GET /api/zones/{cloudId}/resource-pools` (uses first available) |
 | Network | `GET /api/options/zoneNetworkOptions?zoneId={cloudId}&provisionTypeId={id}` |
-| Datastore | Auto-detected from an existing instance's root volume; override with `-DatastoreId` |
+| Datastore | `GET /api/storage-datastores/{DatastoreId}` (default ID `4`); falls back to `GET /api/storage-datastores` + an interactive prompt if that ID doesn't exist |
 | **Version check** | `GET /api/setup/check` (unauthenticated, v9+) |
 | **Current user** (for Wiki) | `GET /api/whoami` |
 | **Instance Wiki page** | `GET/POST/PUT /api/wiki/pages` |
@@ -143,7 +143,7 @@ tab) with three sections:
    Boot capability, storage provider)
 3. **Deployment Settings** — the actual settings used for this VM (cloud,
    group, instance type, layout, plan, network, domain, firmware, disk size,
-   datastore ID, resource pool ID if used)
+   datastore name, resource pool ID if used)
 
 The page is created if none exists for the instance, or updated in place if
 run again against the same instance ID. This step is **best-effort**: if the

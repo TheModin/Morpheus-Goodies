@@ -7,6 +7,15 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [1.5.0] — 2026-07-23
+
+### Changed
+
+- `-DatastoreId` default changed from `0` to `4`.
+- `Resolve-DatastoreId` no longer auto-detects a datastore by scanning existing instances' root volumes. It now looks up the requested datastore directly via `GET /api/storage-datastores/{DatastoreId}`. If that ID doesn't exist (or the request fails for any reason), the script fetches `GET /api/storage-datastores` (optionally filtered by `-DatastoreName`), prints a numbered list of available datastores, and prompts the user via `Read-Host` to pick one (re-prompts on invalid input).
+- `Resolve-DatastoreId` now returns an object with `Id` and `Name` instead of a bare integer ID.
+- The Wiki page's Deployment Settings section now shows `Datastore: <name> (id=N)` instead of the raw `Datastore ID`.
+
 ## [1.4.0] — 2026-07-22
 
 ### Added
