@@ -7,6 +7,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [1.7.0] — 2026-07-23
+
+### Fixed
+
+- `Resolve-DatastoreId` called `GET /api/storage-datastores` and `GET /api/storage-datastores/{id}`, which don't exist on this server (`404 Unable to find api endpoint`). Replaced with `GET /api/options/datastores`, which returns the same `{id, name}` list used by the Morpheus UI's datastore picker; the requested `-DatastoreId` is now matched against this list client-side instead of via a dedicated single-item GET.
+- The `zoneId` query parameter was dropped from this call: `GET /api/options/datastores?zoneId={id}` returned an empty list on the live test server even for a valid, active cloud, which would have caused every run to fall through to the interactive picker. The endpoint is now called unfiltered.
+- Live-tested end-to-end (`-WhatIf`) against `vme.int.hpedemo.se`: `Using datastore id=4 name='B10000-FC-Plugin - 11.0TB Free'.`
+
 ## [1.6.0] — 2026-07-23
 
 ### Added

@@ -110,7 +110,7 @@ The script calls the following Morpheus API endpoints to translate names into ID
 | Service plan | `GET /api/service-plans?zoneId={cloudId}&layoutId={layoutId}` |
 | Resource pool | `GET /api/zones/{cloudId}/resource-pools` (uses first available) |
 | Network | `GET /api/options/zoneNetworkOptions?zoneId={cloudId}&provisionTypeId={id}` |
-| Datastore | `GET /api/storage-datastores/{DatastoreId}` (default ID `4`); falls back to `GET /api/storage-datastores` + an interactive prompt if that ID doesn't exist |
+| Datastore | `GET /api/options/datastores` (default ID `4`, matched client-side); falls back to an interactive prompt if that ID isn't in the list |
 | **Version check** | `GET /api/setup/check` (unauthenticated, v9+) |
 | **Current user** (for Wiki) | `GET /api/whoami` |
 | **Instance Wiki page** | `GET/POST/PUT /api/wiki/pages` |

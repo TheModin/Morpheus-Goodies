@@ -338,32 +338,27 @@ function Resolve-ResourcePoolId {
 function Resolve-DatastoreId {
     param([int]$CloudId)
 
-    # Try the requested datastore ID directly first (default is 4, overridable via -DatastoreId)
-    if ($script:DatastoreId -gt 0) {
-        try {
-            $resp = Invoke-MorpheusApi -Path "/api/storage-datastores/$($script:DatastoreId)"
-            $ds   = $resp.datastore
-            if ($ds) {
-                Write-Log "Using datastore id=$($ds.id) name='$($ds.name)'." -Level SUCCESS
-                return [pscustomobject]@{ Id = [int]$ds.id; Name = $ds.name }
-            }
-        }
-        catch {
-            Write-Log "Datastore id=$($script:DatastoreId) not found or inaccessible ($($_.Exception.Message)) — showing available datastores instead." -Level WARN
-        }
-    }
-
-    # Fall back: list available datastores and let the user pick one interactively
-    Write-Log "Fetching available datastores for selection..."
-    $listResp  = Invoke-MorpheusApi -Path '/api/storage-datastores' -Query @{ max = '100' }
-    $datastores = @($listResp.datastores)
+    Write-Log "Fetching available datastores..."
+    $listResp  = Invoke-MorpheusApi -Path '/api/options/datastores'
+    $datastores = @($listResp.data)
     if ($script:DatastoreName) {
         $datastores = @($datastores | Where-Object { $_.name -eq $script:DatastoreName })
     }
     if (-not $datastores -or $datastores.Count -eq 0) {
-        throw "No datastores available to select from. Use -DatastoreId to provide a valid datastore ID directly."
+        throw "No datastores available. Use -DatastoreId/-DatastoreName to match an existing datastore."
     }
 
+    # Try the requested datastore ID directly first (default is 4, overridable via -DatastoreId)
+    if ($script:DatastoreId -gt 0) {
+        $ds = $datastores | Where-Object { [int]$_.id -eq $script:DatastoreId } | Select-Object -First 1
+        if ($ds) {
+            Write-Log "Using datastore id=$($ds.id) name='$($ds.name)'." -Level SUCCESS
+            return [pscustomobject]@{ Id = [int]$ds.id; Name = $ds.name }
+        }
+        Write-Log "Datastore id=$($script:DatastoreId) not found — showing available datastores instead." -Level WARN
+    }
+
+    # Fall back: let the user pick one interactively
     Write-Host ''
     Write-Host 'Available datastores:' -ForegroundColor Cyan
     for ($i = 0; $i -lt $datastores.Count; $i++) {

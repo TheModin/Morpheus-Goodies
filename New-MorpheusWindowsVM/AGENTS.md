@@ -42,7 +42,7 @@ Key functions:
 - `Resolve-NetworkId` — primary lookup via `GET /api/options/zoneNetworkOptions`; fallback to `GET /api/networks`
 - `Resolve-ServicePlanId` — must pass both `CloudId` and `LayoutId` to get the correct plan set
 - `Resolve-LayoutId` — tries `/api/library/layouts` first, falls back to reading the layout from an existing instance if that endpoint returns 403 (non-admin tokens)
-- `Resolve-DatastoreId` — looks up the datastore by ID directly via `GET /api/storage-datastores/{DatastoreId}` (default ID `4`); if that ID doesn't exist, falls back to `GET /api/storage-datastores` and prompts the user (`Read-Host`) to pick one from a numbered list; returns an object with `Id` and `Name` (the name is needed for the Wiki page). Required because `datastoreId='auto'` in the volume spec is silently unresolved by Morpheus and results in a VM with no backing disk ("Error running vm")
+- `Resolve-DatastoreId` — fetches the datastore list via `GET /api/options/datastores` (default ID `4`), matches by ID client-side; if that ID isn't in the list, prompts the user (`Read-Host`) to pick one from a numbered list; returns an object with `Id` and `Name` (the name is needed for the Wiki page). Required because `datastoreId='auto'` in the volume spec is silently unresolved by Morpheus and results in a VM with no backing disk ("Error running vm"). Note: `/api/options/datastores?zoneId={id}` returned an empty list on the live test server even for a valid cloud — the `zoneId` filter is intentionally omitted and the full unfiltered list is used instead
 - `Get-CurrentMorpheusUser` — calls `GET /api/whoami`, returns the token owner for the Wiki page's "provisioned by" field; failures are non-fatal (returns `$null`, logs a warning)
 - `Set-InstanceWikiPage` — creates/updates a single Wiki page on the instance with three sections (Provisioning Info, Source Image, Deployment Settings); best-effort, never fails the script
 
@@ -95,7 +95,7 @@ $networkId = if ($network.id -is [string] -and $network.id -match '^network-') {
 | List resource pools | GET | `/api/zones/{cloudId}/resource-pools` |
 | Zone network options | GET | `/api/options/zoneNetworkOptions?zoneId={id}&provisionTypeId={id}` |
 | Current user | GET | `/api/whoami` |
-| Get/list datastores | GET | `/api/storage-datastores/{id}` (single lookup), `/api/storage-datastores` (list, for interactive fallback) |
+| List/get datastores | GET | `/api/options/datastores` (unfiltered — the `zoneId` filter returns an empty list on this server even for valid clouds) |
 | Wiki pages (list/create/update) | GET/POST/PUT | `/api/wiki/pages` (list does not honor `refType`/`refId` filters — filter client-side) |
 | Provision instance | POST | `/api/instances` |
 
