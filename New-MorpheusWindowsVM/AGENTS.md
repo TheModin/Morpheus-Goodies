@@ -12,7 +12,7 @@ Run the parse check before any test execution (run from the repository root):
 ```powershell
 $e = $t = $null
 [void][System.Management.Automation.Language.Parser]::ParseFile(
-    (Resolve-Path '.\New-MorpheusWindowsVM_1.0\New-MorpheusWindowsVM.ps1'),
+    (Resolve-Path '.\New-MorpheusWindowsVM\New-MorpheusWindowsVM.ps1'),
     [ref]$t, [ref]$e
 )
 if ($e.Count -eq 0) { 'PARSE_OK' } else { $e | ForEach-Object { $_.Message } }

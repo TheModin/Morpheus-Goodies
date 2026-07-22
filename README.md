@@ -7,7 +7,7 @@ A collection of automation scripts and tools for **HPE Morpheus VM Essentials** 
 | Folder | Description |
 | :--- | :--- |
 | [VMware-to-HVM-Migration_8.1](./VMware-to-HVM-Migration_8.1/) | Automated migration of Windows VMs from VMware vSphere to HPE Morpheus VM Essentials (HVM). Handles offline VirtIO driver injection, Morpheus migration plan execution, and post-migration cleanup. |
-| [New-MorpheusWindowsVM_1.0](./New-MorpheusWindowsVM_1.0/) | Provisions a Windows VM in Morpheus VM Essentials (HVM/KVM) with all settings pre-configured. Resolves all resources by name, supports UEFI, domain join config, and fire-and-forget provisioning via the Morpheus REST API. |
+| [New-MorpheusWindowsVM](./New-MorpheusWindowsVM/) | Provisions a Windows VM in Morpheus VM Essentials (HVM/KVM) with all settings pre-configured. Resolves all resources by name, supports UEFI, domain join config, and fire-and-forget provisioning via the Morpheus REST API. |
 
 ## Requirements
 
