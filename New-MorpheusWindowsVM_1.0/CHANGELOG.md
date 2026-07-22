@@ -7,7 +7,25 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
-## [1.1.0] — 2026-07-22
+## [1.2.0] — 2026-07-22
+
+### Fixed
+
+- **Layout resolution** — `/api/library/layouts` returns 403 for non-admin tokens; added fallback that resolves the layout ID from an existing instance with the same layout name. Admin tokens continue to use the library endpoint directly.
+- **InstanceTypeCode default** — changed from `kvm` to `mvm` (correct HVM instance type code in Morpheus)
+- **LayoutName default** — changed from `Single KVM VM` to `Single HVM`
+- **PlanName default** — corrected from `4 CPU , 8GB Memory` to `4 CPU, 8GB Memory` (no extra space before comma)
+- **DiskSizeGB default** — increased from 60 to 80 GB; the Windows Server 2025 template requires ≥ 65 GB
+- **Network resolution** — `GET /api/options/zoneNetworkOptions` wraps networks inside a `data` object; the resolver now reads `$resp.data.networks` with a fallback to `$resp.networks` for compatibility
+- **Error messages** — `Invoke-MorpheusApi` now surfaces `msg` and per-field `errors` from the Morpheus API 400 response body, giving actionable failure messages
+
+### Added
+
+- `-LayoutId` parameter (default `0`) — provide the layout integer ID directly to skip name-based lookup entirely; useful in fresh environments with no existing HVM instances
+
+---
+
+
 
 ### Added
 
@@ -31,9 +49,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Default settings:
   - Cloud: `HVM Cloud`
   - Group: `HPE VME Admin`
-  - Image: `Windows Server 2025 Template Sysprep (QCOW2)`
-  - Layout: `Single KVM VM`
-  - Plan: `4 CPU , 8GB Memory`
+  - Image: `Windows Server 2025 Template Sysprep`
+  - Layout: `Single HVM`
+  - Plan: `4 CPU, 8GB Memory`
   - Network: `OVS dc-demo-dhcp - 25`
   - Domain: `int.hpedemo.se`
   - UEFI: enabled

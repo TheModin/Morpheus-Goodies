@@ -37,15 +37,16 @@ This provisions a VM named `AAA-NNNNN` (5 random digits) using all default setti
 | `InstanceNamePrefix` | | `AAA-` | Prefix for the generated VM name. Appended with 5 random digits. |
 | `CloudName` | | `HVM Cloud` | Name of the Morpheus cloud to deploy onto. |
 | `GroupName` | | `HPE VME Admin` | Name of the Morpheus group (site). |
-| `ImageName` | | `Windows Server 2025 Template Sysprep (QCOW2)` | Virtual image name to deploy from. |
-| `LayoutName` | | `Single KVM VM` | Instance type layout name. Must exist in Morpheus for the KVM provision type. |
-| `InstanceTypeCode` | | `kvm` | Morpheus instance type code. |
+| `ImageName` | | `Windows Server 2025 Template Sysprep` | Virtual image name to deploy from. |
+| `LayoutName` | | `Single HVM` | Instance type layout name. Falls back to reading layout from an existing instance if `/api/library/layouts` returns 403. |
+| `LayoutId` | | `0` | Override layout ID directly (0 = auto-resolve by name). Use when no existing HVM instances exist for the fallback. |
+| `InstanceTypeCode` | | `mvm` | Morpheus instance type code. `mvm` is the HVM instance type. |
 | `ProvisionTypeCode` | | `kvm` | Provision type code used for network resolution. HVM/KVM always use `kvm`. |
-| `PlanName` | | `4 CPU , 8GB Memory` | Service plan name (note the space before the comma — must match exactly). |
+| `PlanName` | | `4 CPU, 8GB Memory` | Service plan name. Must match exactly. |
 | `NetworkName` | | `OVS dc-demo-dhcp - 25` | Network name to attach the VM NIC to. |
 | `DomainName` | | `int.hpedemo.se` | DNS domain for the VM hostname. |
 | `EnableUEFI` | | `$true` | `$true` = UEFI firmware, `$false` = Legacy BIOS. |
-| `DiskSizeGB` | | `60` | Root disk size in GB. |
+| `DiskSizeGB` | | `80` | Root disk size in GB. Must be ≥ the image minimum (~65 GB for the default image). |
 | `StorageTypeId` | | `1` | Morpheus storage type ID for the root volume. |
 | `LogPath` | | `C:\Windows\Logs\MorpheusProvision` | Directory for the log file. |
 

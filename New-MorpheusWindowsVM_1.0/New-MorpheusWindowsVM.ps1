@@ -31,11 +31,12 @@
 #   InstanceNamePrefix   - Prefix for the generated VM name (default: 'AAA-')
 #   CloudName            - Name of the Morpheus cloud to deploy into (default: 'HVM Cloud')
 #   GroupName            - Name of the Morpheus group/site (default: 'HPE VME Admin')
-#   ImageName            - Virtual image name to deploy from (default: 'Windows Server 2025 Template Sysprep (QCOW2)')
-#   LayoutName           - Instance type layout name (default: 'Single KVM VM')
-#   InstanceTypeCode     - Morpheus instance type code (default: 'kvm')
+#   ImageName            - Virtual image name to deploy from (default: 'Windows Server 2025 Template Sysprep')
+#   LayoutName           - Instance type layout name (default: 'Single HVM')
+#   LayoutId             - Override layout ID directly (skips name lookup; use when /api/library/layouts is restricted)
+#   InstanceTypeCode     - Morpheus instance type code (default: 'mvm' for HVM instances)
 #   ProvisionTypeCode    - Provision type code used for network lookup (default: 'kvm')
-#   PlanName             - Service plan name (default: '4 CPU , 8GB Memory')
+#   PlanName             - Service plan name (default: '4 CPU, 8GB Memory')
 #   NetworkName          - Network name to attach the VM to (default: 'OVS dc-demo-dhcp - 25')
 #   DomainName           - DNS domain for the VM hostname (default: 'int.hpedemo.se')
 #   EnableUEFI           - Boot firmware: $true = UEFI, $false = BIOS (default: $true)
@@ -60,15 +61,16 @@ param(
     [string]$InstanceNamePrefix  = 'AAA-',
     [string]$CloudName           = 'HVM Cloud',
     [string]$GroupName           = 'HPE VME Admin',
-    [string]$ImageName           = 'Windows Server 2025 Template Sysprep (QCOW2)',
-    [string]$LayoutName          = 'Single KVM VM',
-    [string]$InstanceTypeCode    = 'kvm',
+    [string]$ImageName           = 'Windows Server 2025 Template Sysprep',
+    [string]$LayoutName          = 'Single HVM',
+    [int]$LayoutId               = 0,
+    [string]$InstanceTypeCode    = 'mvm',
     [string]$ProvisionTypeCode   = 'kvm',
-    [string]$PlanName            = '4 CPU , 8GB Memory',
+    [string]$PlanName            = '4 CPU, 8GB Memory',
     [string]$NetworkName         = 'OVS dc-demo-dhcp - 25',
     [string]$DomainName          = 'int.hpedemo.se',
     [bool]$EnableUEFI            = $true,
-    [int]$DiskSizeGB             = 60,
+    [int]$DiskSizeGB             = 80,
     [int]$StorageTypeId          = 1,
     [string]$LogPath             = 'C:\Windows\Logs\MorpheusProvision'
 )
@@ -137,7 +139,14 @@ function Invoke-MorpheusApi {
     catch {
         $statusCode = $_.Exception.Response?.StatusCode.value__
         $errMsg     = $null
-        try { $errMsg = ($_.ErrorDetails.Message | ConvertFrom-Json).message } catch {}
+        try {
+            $errBody = $_.ErrorDetails.Message | ConvertFrom-Json
+            $errMsg  = $errBody.msg ?? $errBody.message
+            if ($errBody.errors) {
+                $errFields = ($errBody.errors.PSObject.Properties | ForEach-Object { "$($_.Name): $($_.Value)" }) -join '; '
+                $errMsg    = "$errMsg ($errFields)"
+            }
+        } catch {}
         throw "Morpheus API $Method $Path failed (HTTP $statusCode): $($errMsg ?? $_.Exception.Message)"
     }
 }
@@ -147,8 +156,8 @@ function Invoke-MorpheusApi {
 # ═══════════════════════════════════════════════════════════════════════════════
 
 function Test-MorpheusVersion {
-    # GET /api/setup/check is unauthenticated and returns appVersion in all v9+ builds.
-    # If the endpoint is unavailable (older builds, firewalls) we warn and continue —
+    # GET /api/setup/check is unauthenticated and returns buildVersion in Morpheus 9+ builds.
+    # If the endpoint is unavailable or the field is empty we warn and continue —
     # failing here should never block a deployment unnecessarily.
     Write-Log "Checking Morpheus server version (requires 9.0+)..."
     try {
@@ -157,9 +166,11 @@ function Test-MorpheusVersion {
             -Method               GET `
             -SkipCertificateCheck:$script:MorpheusSkipSSL `
             -TimeoutSec           10
-        $appVersion = $resp.appVersion ?? $resp.version
-        if (-not $appVersion) {
-            Write-Log "Version check: /api/setup/check responded but contained no appVersion field — skipping version gate." -Level WARN
+
+        # Use PSObject to safely read the property without tripping Set-StrictMode
+        $appVersion = $resp.PSObject.Properties['buildVersion']?.Value
+        if ([string]::IsNullOrWhiteSpace($appVersion)) {
+            Write-Log "Version check: buildVersion field is empty — version information unavailable, skipping version gate." -Level WARN
             return
         }
         # Parse major version from strings like "9.0.1-123" or "9.0.1"
@@ -226,30 +237,67 @@ function Resolve-VirtualImageId {
 }
 
 function Resolve-LayoutId {
-    Write-Log "Resolving layout '$script:LayoutName' (provisionType=$script:ProvisionTypeCode)..."
-    $resp   = Invoke-MorpheusApi -Path '/api/library/layouts' -Query @{
-        provisionType = $script:ProvisionTypeCode
-        name          = $script:LayoutName
-        max           = '10'
+    param([int]$CloudId)
+
+    # If caller provided an explicit layout ID, skip all API lookups
+    if ($script:LayoutId -gt 0) {
+        Write-Log "Using explicit LayoutId=$($script:LayoutId) (name lookup skipped)." -Level SUCCESS
+        return $script:LayoutId
     }
-    $layout = $resp.instanceTypeLayouts | Where-Object { $_.name -eq $script:LayoutName } | Select-Object -First 1
-    if (-not $layout) { throw "Layout '$script:LayoutName' not found for provision type '$script:ProvisionTypeCode'." }
-    Write-Log "Layout resolved: id=$($layout.id)" -Level SUCCESS
-    return [int]$layout.id
+
+    Write-Log "Resolving layout '$script:LayoutName'..."
+
+    # Primary: admin library endpoint (may return 403 for non-admin tokens)
+    try {
+        $resp   = Invoke-MorpheusApi -Path '/api/library/layouts' -Query @{
+            provisionType = $script:ProvisionTypeCode
+            name          = $script:LayoutName
+            max           = '10'
+        }
+        $layout = $resp.instanceTypeLayouts | Where-Object { $_.name -eq $script:LayoutName } | Select-Object -First 1
+        if ($layout) {
+            Write-Log "Layout resolved via library: id=$($layout.id)" -Level SUCCESS
+            return [int]$layout.id
+        }
+    }
+    catch {
+        if ($_.Exception.Message -notmatch '403|Forbidden') { throw }
+        Write-Log "/api/library/layouts returned 403 (token lacks admin permission) — trying instance-based fallback..." -Level WARN
+    }
+
+    # Fallback: infer layout ID from an existing instance in this cloud
+    $instResp = Invoke-MorpheusApi -Path '/api/instances' -Query @{ zoneId = $CloudId; max = '20' }
+    $match    = $instResp.instances | Where-Object { $_.layout.name -eq $script:LayoutName } | Select-Object -First 1
+    if ($match) {
+        Write-Log "Layout resolved via existing instance: id=$($match.layout.id)" -Level SUCCESS
+        return [int]$match.layout.id
+    }
+
+    throw "Layout '$script:LayoutName' not found. If /api/library/layouts is restricted use -LayoutId to provide the layout ID directly."
 }
 
 function Resolve-ServicePlanId {
     param([int]$CloudId, [int]$LayoutId)
     Write-Log "Resolving service plan '$script:PlanName'..."
+
+    # Try with layout filter first (more targeted)
     $resp = Invoke-MorpheusApi -Path '/api/service-plans' -Query @{
         zoneId   = $CloudId
         layoutId = $LayoutId
-        max      = '100'
+        max      = '200'
     }
     $plan = $resp.servicePlans | Where-Object { $_.name -eq $script:PlanName } | Select-Object -First 1
+
+    # Fallback: broader search without layout filter (some plans are not layout-indexed by this API)
+    if (-not $plan) {
+        Write-Log "Plan not found in layout-filtered results — retrying with zone-only filter..." -Level WARN
+        $resp2 = Invoke-MorpheusApi -Path '/api/service-plans' -Query @{ zoneId = $CloudId; max = '200' }
+        $plan  = $resp2.servicePlans | Where-Object { $_.name -eq $script:PlanName } | Select-Object -First 1
+    }
+
     if (-not $plan) {
         $available = ($resp.servicePlans | Select-Object -ExpandProperty name) -join ', '
-        throw "Service plan '$script:PlanName' not found. Available plans: $available"
+        throw "Service plan '$script:PlanName' not found. Available plans (layout-filtered): $available"
     }
     Write-Log "Service plan resolved: id=$($plan.id)" -Level SUCCESS
     return [int]$plan.id
@@ -278,7 +326,8 @@ function Resolve-NetworkId {
         provisionTypeId = $ProvisionTypeId
         max             = '100'
     }
-    $network = $resp.networks | Where-Object { $_.name -eq $script:NetworkName } | Select-Object -First 1
+    $networks = $resp.data?.networks ?? $resp.networks
+    $network = $networks | Where-Object { $_.name -eq $script:NetworkName } | Select-Object -First 1
 
     # Fallback: direct network list
     if (-not $network) {
@@ -288,7 +337,7 @@ function Resolve-NetworkId {
     }
 
     if (-not $network) {
-        $available = ($resp.networks | Select-Object -ExpandProperty name) -join ', '
+        $available = ($networks | Select-Object -ExpandProperty name) -join ', '
         throw "Network '$script:NetworkName' not found. Available in zone: $available"
     }
 
@@ -315,6 +364,7 @@ $script:CloudName         = $CloudName
 $script:GroupName         = $GroupName
 $script:ImageName         = $ImageName
 $script:LayoutName        = $LayoutName
+$script:LayoutId          = $LayoutId
 $script:ProvisionTypeCode = $ProvisionTypeCode
 $script:PlanName          = $PlanName
 $script:NetworkName       = $NetworkName
@@ -342,7 +392,7 @@ $cloudId         = [int]$cloud.id
 $groupId         = Resolve-GroupId
 $provisionTypeId = Resolve-ProvisionTypeId
 $imageId         = Resolve-VirtualImageId
-$layoutId        = Resolve-LayoutId
+$layoutId        = Resolve-LayoutId -CloudId $cloudId
 $planId          = Resolve-ServicePlanId -CloudId $cloudId -LayoutId $layoutId
 $resourcePoolId  = Resolve-ResourcePoolId -CloudId $cloudId
 $networkId       = Resolve-NetworkId -CloudId $cloudId -ProvisionTypeId $provisionTypeId
