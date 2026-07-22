@@ -514,9 +514,13 @@ function Set-InstanceWikiPage {
     $imageDenylist = @(
         'id', 'name', 'code', 'category', 'imageType', 'osType', 'minDiskGB', 'minRamGB',
         'uefi', 'tpm', 'secureBoot', 'storageProvider', 'dateCreated', 'lastUpdated',
-        'externalId', 'accountId', 'tenantId', 'owner', 'account', 'region', 'bucket',
+        'externalId', 'accountId', 'tenantId', 'owner', 'ownerId', 'account', 'region', 'bucket',
         'key', 'config', 'refType', 'refId', 'deleted', 'systemImage', 'uniqueId',
-        'remotePath', 'imagePath', 'externalType', 'internalId', 'visibility'
+        'remotePath', 'imagePath', 'externalType', 'internalId', 'visibility',
+        'minRam', 'minDisk', 'rawSize', 'rawSizeGB',
+        # Never surface credentials/secrets in the Wiki page, even if populated on the image
+        'sshUsername', 'sshPassword', 'sshPasswordHash', 'sshKey',
+        'guestConsoleUsername', 'guestConsolePassword', 'guestConsolePasswordHash'
     ) + @($shownImageProps)
 
     foreach ($prop in $Image.PSObject.Properties) {

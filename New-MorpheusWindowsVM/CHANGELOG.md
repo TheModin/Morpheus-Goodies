@@ -14,9 +14,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - The Wiki page's **Source Image** section now includes an **Advanced** subsection covering the image's Advanced-tab settings: "Is Cloud Init Enabled?", "Cloud Guest Customization?", "Sysprepped / Generalized Image?", "Install Agent?", plus any other simple (boolean/string/number) property found on the image that isn't already shown elsewhere in the section — so the Wiki page reflects the image's Advanced options without hardcoding every possible field name.
 - `Resolve-VirtualImageId` now fetches the full image detail via `GET /api/virtual-images/{id}` after resolving the ID from the name search, since the list endpoint returns a trimmed object that often lacks Advanced-tab fields. Falls back to the (trimmed) list object with a warning if the detail call fails — never fails the script.
 
+### Fixed
+
+- The catch-all Advanced-settings list excluded raw byte-count fields (`minRam`, `minDisk`, `rawSize`, `rawSizeGB` — GB-rounded equivalents are already shown) and, importantly, credential-bearing fields (`sshUsername`, `sshPassword`, `sshPasswordHash`, `sshKey`, `guestConsoleUsername`, `guestConsolePassword`, `guestConsolePasswordHash`) so a populated password/key can never leak into the Wiki page even though the catch-all only checks for `$null`.
+
 ### Notes
 
-- Property names for "Cloud Guest Customization?" and "Install Agent?" vary across Morpheus versions; the script checks several plausible aliases (`isForceCustomization`/`guestCustomization`/`cloudInitGuestCustomization`, `installAgent`/`noAgent`) and falls back to a generic catch-all list of remaining image properties as a safety net. Recommend verifying the rendered Wiki page against a live server after upgrading.
+- Live-verified against `vme.int.hpedemo.se` (Morpheus 9.0.1) using virtual image "Windows Server 2025 Template Sysprep": `isCloudInit`, `isForceCustomization`, `isSysprep`, and `installAgent` are the correct live property names for all four requested settings — no alias fallback was needed on this server. The alias lists and catch-all remain in place as a safety net for other Morpheus versions/editions.
 
 ## [1.5.0] — 2026-07-23
 
