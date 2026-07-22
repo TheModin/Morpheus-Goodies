@@ -1,0 +1,379 @@
+#Requires -Version 7.0
+
+# Script: New-MorpheusWindowsVM.ps1
+# Purpose: Provisions a Windows VM in HPE Morpheus VM Essentials (HVM/KVM) by
+#          resolving all settings by name via the Morpheus REST API and submitting
+#          a POST /api/instances request (fire-and-forget).
+#
+# How it works:
+#   1. Validates parameters and PS7 environment
+#   2. Resolves the target cloud by name → cloudId
+#   3. Resolves the group (site) by name → groupId
+#   4. Resolves the KVM provision type → provisionTypeId (for network lookup)
+#   5. Resolves the virtual image by name → imageId
+#   6. Resolves the layout by name (filtered to KVM) → layoutId
+#   7. Resolves the service plan by name (filtered to cloud + layout) → planId
+#   8. Resolves the resource pool (uses first available; omitted if none) → resourcePoolId
+#   9. Resolves the network by name via zone network options → networkId
+#  10. Generates a unique instance name: <Prefix><5 random digits>
+#  11. POSTs to /api/instances and logs the result
+#
+# Requirements:
+#   - PowerShell 7.0+
+#   - Network access to the Morpheus server
+#   - A Morpheus API bearer token with provisioning permissions
+#
+# Parameters:
+#   MorpheusServer       - Morpheus/VM Essentials hostname or IP (no https:// prefix)
+#   MorpheusToken        - Morpheus API bearer token as SecureString
+#   MorpheusSkipSSL      - Skip TLS certificate validation (use only in dev/lab)
+#   InstanceNamePrefix   - Prefix for the generated VM name (default: 'AAA-')
+#   CloudName            - Name of the Morpheus cloud to deploy into (default: 'HVM Cloud')
+#   GroupName            - Name of the Morpheus group/site (default: 'HPE VME Admin')
+#   ImageName            - Virtual image name to deploy from (default: 'Windows Server 2025 Template Sysprep (QCOW2)')
+#   LayoutName           - Instance type layout name (default: 'Single KVM VM')
+#   InstanceTypeCode     - Morpheus instance type code (default: 'kvm')
+#   ProvisionTypeCode    - Provision type code used for network lookup (default: 'kvm')
+#   PlanName             - Service plan name (default: '4 CPU , 8GB Memory')
+#   NetworkName          - Network name to attach the VM to (default: 'OVS dc-demo-dhcp - 25')
+#   DomainName           - DNS domain for the VM hostname (default: 'int.hpedemo.se')
+#   EnableUEFI           - Boot firmware: $true = UEFI, $false = BIOS (default: $true)
+#   DiskSizeGB           - Root disk size in GB (default: 60)
+#   StorageTypeId        - Morpheus storage type ID for the root volume (default: 1)
+#   LogPath              - Directory for the provisioning log file
+
+[CmdletBinding(SupportsShouldProcess)]
+param(
+    [Parameter(Mandatory)][ValidateScript({
+        if ($_ -match '^https?://') { throw "MorpheusServer must be a hostname or IP only — do not include 'https://'. Got: '$_'" }
+        if ($_ -match '[/\\?#]')    { throw "MorpheusServer must be a plain hostname or IP with no path or query. Got: '$_'" }
+        return $true
+    })]
+    [string]$MorpheusServer,
+
+    [Parameter(Mandatory)]
+    [System.Security.SecureString]$MorpheusToken,
+
+    [switch]$MorpheusSkipSSL,
+
+    [string]$InstanceNamePrefix  = 'AAA-',
+    [string]$CloudName           = 'HVM Cloud',
+    [string]$GroupName           = 'HPE VME Admin',
+    [string]$ImageName           = 'Windows Server 2025 Template Sysprep (QCOW2)',
+    [string]$LayoutName          = 'Single KVM VM',
+    [string]$InstanceTypeCode    = 'kvm',
+    [string]$ProvisionTypeCode   = 'kvm',
+    [string]$PlanName            = '4 CPU , 8GB Memory',
+    [string]$NetworkName         = 'OVS dc-demo-dhcp - 25',
+    [string]$DomainName          = 'int.hpedemo.se',
+    [bool]$EnableUEFI            = $true,
+    [int]$DiskSizeGB             = 60,
+    [int]$StorageTypeId          = 1,
+    [string]$LogPath             = 'C:\Windows\Logs\MorpheusProvision'
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Logging
+# ═══════════════════════════════════════════════════════════════════════════════
+
+function Write-Log {
+    param(
+        [Parameter(Mandatory)][string]$Message,
+        [ValidateSet('INFO', 'WARN', 'ERROR', 'SUCCESS')][string]$Level = 'INFO'
+    )
+    $ts       = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $colours  = @{ INFO = 'Cyan'; WARN = 'Yellow'; ERROR = 'Red'; SUCCESS = 'Green' }
+    $line     = "[$ts] [$Level] $Message"
+    Write-Host $line -ForegroundColor $colours[$Level]
+
+    try {
+        $null = New-Item -ItemType Directory -Path $LogPath -Force
+        Add-Content -Path (Join-Path $LogPath 'provision.log') -Value $line
+    }
+    catch {
+        Write-Host "[$ts] [WARN] Could not write to log file: $_" -ForegroundColor Yellow
+    }
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Morpheus API helper
+# ═══════════════════════════════════════════════════════════════════════════════
+
+function Invoke-MorpheusApi {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [string]$Method      = 'GET',
+        [hashtable]$Body     = $null,
+        [hashtable]$Query    = @{}
+    )
+
+    # Decrypt bearer token for this request only; zero memory immediately after use
+    $bstr  = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($script:MorpheusToken)
+    $token = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+    [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+
+    $uri = "https://$script:MorpheusServer$Path"
+    if ($Query.Count -gt 0) {
+        $qs  = ($Query.GetEnumerator() |
+                ForEach-Object { "$([Uri]::EscapeDataString($_.Key))=$([Uri]::EscapeDataString($_.Value.ToString()))" }) -join '&'
+        $uri = "${uri}?${qs}"
+    }
+
+    $params = @{
+        Uri                  = $uri
+        Method               = $Method
+        Headers              = @{ Authorization = "Bearer $token"; 'Content-Type' = 'application/json' }
+        SkipCertificateCheck = $script:MorpheusSkipSSL
+    }
+    if ($Body) { $params.Body = $Body | ConvertTo-Json -Depth 20 -Compress }
+
+    try {
+        return Invoke-RestMethod @params
+    }
+    catch {
+        $statusCode = $_.Exception.Response?.StatusCode.value__
+        $errMsg     = $null
+        try { $errMsg = ($_.ErrorDetails.Message | ConvertFrom-Json).message } catch {}
+        throw "Morpheus API $Method $Path failed (HTTP $statusCode): $($errMsg ?? $_.Exception.Message)"
+    }
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ID resolution helpers — all resolve by name, fail loudly with helpful messages
+# ═══════════════════════════════════════════════════════════════════════════════
+
+function Resolve-Cloud {
+    Write-Log "Resolving cloud '$script:CloudName'..."
+    $resp  = Invoke-MorpheusApi -Path '/api/zones' -Query @{ name = $script:CloudName; max = '10' }
+    $cloud = $resp.zones | Where-Object { $_.name -eq $script:CloudName } | Select-Object -First 1
+    if (-not $cloud) {
+        $available = ($resp.zones | Select-Object -ExpandProperty name) -join ', '
+        throw "Cloud '$script:CloudName' not found. Available clouds: $available"
+    }
+    Write-Log "Cloud resolved: id=$($cloud.id)  zoneType=$($cloud.zoneType?.code)" -Level SUCCESS
+    return $cloud
+}
+
+function Resolve-GroupId {
+    Write-Log "Resolving group '$script:GroupName'..."
+    $resp  = Invoke-MorpheusApi -Path '/api/groups' -Query @{ name = $script:GroupName; max = '10' }
+    $group = $resp.groups | Where-Object { $_.name -eq $script:GroupName } | Select-Object -First 1
+    if (-not $group) {
+        $available = ($resp.groups | Select-Object -ExpandProperty name) -join ', '
+        throw "Group '$script:GroupName' not found. Available groups: $available"
+    }
+    Write-Log "Group resolved: id=$($group.id)" -Level SUCCESS
+    return [int]$group.id
+}
+
+function Resolve-ProvisionTypeId {
+    Write-Log "Resolving provision type '$script:ProvisionTypeCode'..."
+    $resp = Invoke-MorpheusApi -Path '/api/provision-types' -Query @{ code = $script:ProvisionTypeCode; max = '5' }
+    $pt   = $resp.provisionTypes | Where-Object { $_.code -eq $script:ProvisionTypeCode } | Select-Object -First 1
+    if (-not $pt) { throw "Provision type with code '$script:ProvisionTypeCode' not found." }
+    Write-Log "Provision type resolved: id=$($pt.id)  code=$($pt.code)" -Level SUCCESS
+    return [int]$pt.id
+}
+
+function Resolve-VirtualImageId {
+    Write-Log "Resolving virtual image '$script:ImageName'..."
+    $resp = Invoke-MorpheusApi -Path '/api/virtual-images' -Query @{ name = $script:ImageName; max = '5' }
+    $img  = $resp.virtualImages | Where-Object { $_.name -eq $script:ImageName } | Select-Object -First 1
+    if (-not $img) { throw "Virtual image '$script:ImageName' not found." }
+    Write-Log "Virtual image resolved: id=$($img.id)" -Level SUCCESS
+    return [int]$img.id
+}
+
+function Resolve-LayoutId {
+    Write-Log "Resolving layout '$script:LayoutName' (provisionType=$script:ProvisionTypeCode)..."
+    $resp   = Invoke-MorpheusApi -Path '/api/library/layouts' -Query @{
+        provisionType = $script:ProvisionTypeCode
+        name          = $script:LayoutName
+        max           = '10'
+    }
+    $layout = $resp.instanceTypeLayouts | Where-Object { $_.name -eq $script:LayoutName } | Select-Object -First 1
+    if (-not $layout) { throw "Layout '$script:LayoutName' not found for provision type '$script:ProvisionTypeCode'." }
+    Write-Log "Layout resolved: id=$($layout.id)" -Level SUCCESS
+    return [int]$layout.id
+}
+
+function Resolve-ServicePlanId {
+    param([int]$CloudId, [int]$LayoutId)
+    Write-Log "Resolving service plan '$script:PlanName'..."
+    $resp = Invoke-MorpheusApi -Path '/api/service-plans' -Query @{
+        zoneId   = $CloudId
+        layoutId = $LayoutId
+        max      = '100'
+    }
+    $plan = $resp.servicePlans | Where-Object { $_.name -eq $script:PlanName } | Select-Object -First 1
+    if (-not $plan) {
+        $available = ($resp.servicePlans | Select-Object -ExpandProperty name) -join ', '
+        throw "Service plan '$script:PlanName' not found. Available plans: $available"
+    }
+    Write-Log "Service plan resolved: id=$($plan.id)" -Level SUCCESS
+    return [int]$plan.id
+}
+
+function Resolve-ResourcePoolId {
+    param([int]$CloudId)
+    Write-Log "Checking for resource pools in cloud id=$CloudId..."
+    $resp = Invoke-MorpheusApi -Path "/api/zones/$CloudId/resource-pools" -Query @{ max = '10' }
+    $pool = $resp.resourcePools | Select-Object -First 1
+    if (-not $pool) {
+        Write-Log "No resource pools found — resourcePoolId will be omitted from request." -Level WARN
+        return $null
+    }
+    Write-Log "Resource pool resolved: id=$($pool.id)  name=$($pool.name)" -Level SUCCESS
+    return [int]$pool.id
+}
+
+function Resolve-NetworkId {
+    param([int]$CloudId, [int]$ProvisionTypeId)
+    Write-Log "Resolving network '$script:NetworkName'..."
+
+    # Primary: zone-aware network options (provision-type filtered)
+    $resp    = Invoke-MorpheusApi -Path '/api/options/zoneNetworkOptions' -Query @{
+        zoneId          = $CloudId
+        provisionTypeId = $ProvisionTypeId
+        max             = '100'
+    }
+    $network = $resp.networks | Where-Object { $_.name -eq $script:NetworkName } | Select-Object -First 1
+
+    # Fallback: direct network list
+    if (-not $network) {
+        Write-Log "Network not found via zoneNetworkOptions — trying /api/networks fallback..." -Level WARN
+        $fallback = Invoke-MorpheusApi -Path '/api/networks' -Query @{ name = $script:NetworkName; max = '5' }
+        $network  = $fallback.networks | Where-Object { $_.name -eq $script:NetworkName } | Select-Object -First 1
+    }
+
+    if (-not $network) {
+        $available = ($resp.networks | Select-Object -ExpandProperty name) -join ', '
+        throw "Network '$script:NetworkName' not found. Available in zone: $available"
+    }
+
+    # Morpheus expects network IDs in the format "network-{id}" in the provision body
+    $networkId = if ($network.id -is [string] -and $network.id -match '^network-') {
+        $network.id
+    } else {
+        "network-$($network.id)"
+    }
+
+    Write-Log "Network resolved: $networkId" -Level SUCCESS
+    return $networkId
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Main execution
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Publish parameters to script scope so helper functions can read them
+$script:MorpheusServer    = $MorpheusServer
+$script:MorpheusToken     = $MorpheusToken
+$script:MorpheusSkipSSL   = $MorpheusSkipSSL.IsPresent
+$script:CloudName         = $CloudName
+$script:GroupName         = $GroupName
+$script:ImageName         = $ImageName
+$script:LayoutName        = $LayoutName
+$script:ProvisionTypeCode = $ProvisionTypeCode
+$script:PlanName          = $PlanName
+$script:NetworkName       = $NetworkName
+
+Write-Log ('─' * 70)
+Write-Log 'New-MorpheusWindowsVM  —  VM Provisioning'
+Write-Log ('─' * 70)
+Write-Log "Server         : $MorpheusServer"
+Write-Log "Cloud          : $CloudName"
+Write-Log "Group          : $GroupName"
+Write-Log "Image          : $ImageName"
+Write-Log "Plan           : $PlanName"
+Write-Log "Network        : $NetworkName"
+Write-Log "Domain         : $DomainName"
+Write-Log "UEFI           : $EnableUEFI"
+Write-Log "Name prefix    : $InstanceNamePrefix"
+Write-Log ('─' * 70)
+
+# Resolve all required IDs
+$cloud           = Resolve-Cloud
+$cloudId         = [int]$cloud.id
+$groupId         = Resolve-GroupId
+$provisionTypeId = Resolve-ProvisionTypeId
+$imageId         = Resolve-VirtualImageId
+$layoutId        = Resolve-LayoutId
+$planId          = Resolve-ServicePlanId -CloudId $cloudId -LayoutId $layoutId
+$resourcePoolId  = Resolve-ResourcePoolId -CloudId $cloudId
+$networkId       = Resolve-NetworkId -CloudId $cloudId -ProvisionTypeId $provisionTypeId
+
+# Generate unique VM name: prefix + exactly 5 random digits
+$suffix       = '{0:D5}' -f (Get-Random -Minimum 0 -Maximum 99999)
+$instanceName = "$InstanceNamePrefix$suffix"
+Write-Log "Generated VM name: $instanceName"
+
+# Build provisioning request body
+$config = @{
+    imageId    = $imageId
+    firmware   = if ($EnableUEFI) { 'uefi' } else { 'bios' }
+    createUser = $false
+}
+
+if (-not [string]::IsNullOrWhiteSpace($DomainName)) {
+    $config['customOptions'] = @{ domainName = $DomainName }
+}
+
+if ($null -ne $resourcePoolId) {
+    $config['resourcePoolId'] = $resourcePoolId
+}
+
+$provisionBody = @{
+    zoneId   = $cloudId
+    instance = @{
+        name         = $instanceName
+        hostName     = $instanceName
+        site         = @{ id = $groupId }
+        instanceType = @{ code = $InstanceTypeCode }
+        layout       = @{ id = $layoutId }
+        plan         = @{ id = $planId }
+    }
+    config            = $config
+    networkInterfaces = @(
+        @{
+            network = @{ id = $networkId }
+            ipMode  = 'dhcp'
+        }
+    )
+    volumes           = @(
+        @{
+            id          = -1
+            rootVolume  = $true
+            name        = 'root'
+            size        = $DiskSizeGB
+            storageType = $StorageTypeId
+            datastoreId = 'auto'
+        }
+    )
+}
+
+Write-Log ('─' * 70)
+Write-Log "Submitting provision request for '$instanceName'..."
+
+if ($PSCmdlet.ShouldProcess($instanceName, 'Provision Morpheus VM')) {
+    $resp     = Invoke-MorpheusApi -Path '/api/instances' -Method POST -Body $provisionBody
+    $instance = $resp.instance
+
+    Write-Log ('─' * 70)
+    Write-Log 'VM provisioning submitted successfully!' -Level SUCCESS
+    Write-Log "  Instance Name : $($instance.name)"
+    Write-Log "  Instance ID   : $($instance.id)"
+    Write-Log "  Status        : $($instance.status)"
+    Write-Log "  URL           : https://$MorpheusServer/#/provisioning/instances/$($instance.id)"
+    Write-Log ('─' * 70)
+
+    return [pscustomobject]@{
+        Name   = $instance.name
+        Id     = $instance.id
+        Status = $instance.status
+        Url    = "https://$MorpheusServer/#/provisioning/instances/$($instance.id)"
+    }
+}
