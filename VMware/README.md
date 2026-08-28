@@ -2,6 +2,10 @@
 
 `Remove-VMware-Tools.ps1` removes VMware Tools from a Windows guest. It is intended for migration or cleanup scenarios where the standard VMware Tools uninstaller may fail because the VM is no longer running on VMware virtual hardware.
 
+## Disclaimer
+
+This script is provided as-is with no support or warranty. You are responsible for reviewing, testing, and using it appropriately. Test it in a safe, non-production environment before running it against any system that matters.
+
 ## What it does
 
 The script runs `Remove-VMwareToolsInternal` immediately when executed. It uses a staged removal process:

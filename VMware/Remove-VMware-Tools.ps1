@@ -1,4 +1,8 @@
-	function Remove-VMwareToolsInternal {
+# Disclaimer:
+# This script is provided as-is with no support or warranty. You are responsible
+# for reviewing, testing, and using it appropriately. Test it in a safe,
+# non-production environment before running it against any system that matters.
+function Remove-VMwareToolsInternal {
     $regPaths = @(
         'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
         'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
