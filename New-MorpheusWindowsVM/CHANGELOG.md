@@ -7,6 +7,45 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+---
+
+## [1.8.2] — 2026-07-24
+
+### Fixed
+
+- **Real (non-`-WhatIf`) provisioning against a pool-assigned network failed** with `HTTP 400: networkInterfaces: You must enter an ip address`. Root cause: the pool branch sent `ipMode='static'` + `poolId` + `networkPool.id`, but Morpheus's `ipMode:'static'` always requires an explicit `ipAddress`, regardless of any pool fields supplied — pools are not auto-assigned under `static` mode.
+- Corrected to send `ipMode='pool'` + `poolId` (dropping the unused `networkPool` object) for the pool branch. This was confirmed against `vme.int.hpedemo.se` with real (non-`-WhatIf`) provisioning requests: the request is now accepted, and the resulting NIC correctly records `ipMode:"pool"` with the pool attached.
+
+### Known issue (environment, not script)
+
+- On `vme.int.hpedemo.se`, VMs provisioned with `ipMode='pool'` still receive a DHCP-leased address from a different subnet (`10.10.10.x`) rather than an address from the pool's own subnet (`10.10.20.0/24`). This appears to be a VLAN/OVS bridge tagging issue in that environment rather than an API payload problem — `ipMode='pool'` + `poolId` matches Morpheus's documented contract. Flagged for the network team to investigate separately.
+
+## [1.8.1] — 2026-07-24
+
+### Fixed
+
+- **Corrected the IP pool JSON schema assumption from 1.8.0** after live verification against `vme.int.hpedemo.se`. The real `GET /api/options/zoneNetworkOptions` network object exposes a single optional `pool` object (`{id, name}` or `null`) plus `dhcpServer` (bool) and `allowStaticOverride` (bool) flags — never an array of multiple pools per network. `Resolve-NetworkIpAssignment` was rewritten to use these exact fields; the previously-added "multiple pools → interactive picker" branch was removed since a network can have at most one pool.
+- Auto-detection now correctly honors `allowStaticOverride`: if a network has both DHCP and a pool but does not permit overriding DHCP, the script uses DHCP even though a pool exists (previously would have incorrectly preferred the pool).
+
+### Verified
+
+- Live end-to-end `-WhatIf` runs against `vme.int.hpedemo.se` (HVM Cloud) confirmed all paths: network with no pool → DHCP; network with pool + DHCP + override allowed → pool (auto-preferred); `-ForceDhcp` on a pool-capable network → DHCP; `-IpPoolName` with the correct name → pool; `-IpPoolName` with an unknown name → throws listing the actual available pool; `-IpPoolName` on a network with no pool at all → throws.
+
+## [1.8.0] — 2026-07-24
+
+### Added
+
+- **IP pool / DHCP selection for the NIC**: previously the script always used `ipMode='dhcp'` with no way to select an IP pool. Added:
+  - `-IpPoolName` parameter — explicit override to force a specific IP pool by name (must belong to the resolved network); throws with the list of available pool names if not found.
+  - `-ForceDhcp` switch — explicit override to force DHCP even when the network has pool(s) configured. Mutually exclusive with `-IpPoolName`.
+  - `Resolve-NetworkIpAssignment` function — auto-detects the correct default when neither override is given: no pools → DHCP; only a pool → use it; DHCP + exactly one pool → prefer the pool; multiple pools → interactive numbered prompt (mirrors the `Resolve-DatastoreId` UX), including a "Use DHCP instead" entry when DHCP is also valid on that network.
+  - `Resolve-NetworkId` now also returns the resolved network object (in addition to the network ID) so `Resolve-NetworkIpAssignment` can inspect its pool data.
+  - The Wiki page's Deployment Settings section now includes an `IP Assignment` line (`DHCP` or `Pool: <name> (id=N)`).
+
+### Notes
+
+- Superseded by 1.8.1 below: the exact pool field-name assumption here was corrected after live verification against `vme.int.hpedemo.se`.
+
 ## [1.7.0] — 2026-07-23
 
 ### Fixed

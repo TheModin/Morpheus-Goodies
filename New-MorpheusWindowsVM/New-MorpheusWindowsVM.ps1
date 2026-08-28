@@ -15,9 +15,10 @@
 #   7. Resolves the service plan by name (filtered to cloud + layout) → planId
 #   8. Resolves the resource pool (uses first available; omitted if none) → resourcePoolId
 #   9. Resolves the network by name via zone network options → networkId
-#  10. Generates a unique instance name: <Prefix><5 random digits>
-#  11. POSTs to /api/instances and logs the result
-#  12. Writes/updates a Wiki page on the new instance documenting who/when it
+#  10. Resolves the NIC's IP assignment (DHCP vs. an IP pool) for that network
+#  11. Generates a unique instance name: <Prefix><5 random digits>
+#  12. POSTs to /api/instances and logs the result
+#  13. Writes/updates a Wiki page on the new instance documenting who/when it
 #      was provisioned, the source image's settings, and the deployment
 #      settings used (best-effort — failures here do not fail the script)
 #
@@ -41,6 +42,10 @@
 #   ProvisionTypeCode    - Provision type code used for network lookup (default: 'kvm')
 #   PlanName             - Service plan name (default: '4 CPU, 8GB Memory')
 #   NetworkName          - Network name to attach the VM to (default: 'OVS dc-demo-dhcp - 25')
+#   IpPoolName           - Explicit IP pool name override. If set, use this pool for the NIC
+#                          instead of auto-detecting (mutually exclusive with -ForceDhcp)
+#   ForceDhcp            - Explicit override: always use DHCP even if the network has pool(s)
+#                          configured (mutually exclusive with -IpPoolName)
 #   DomainName           - DNS domain for the VM hostname (default: 'int.hpedemo.se')
 #   EnableUEFI           - Boot firmware: $true = UEFI, $false = BIOS (default: $true)
 #   DiskSizeGB           - Root disk size in GB (default: 60)
@@ -74,6 +79,8 @@ param(
     [string]$ProvisionTypeCode   = 'kvm',
     [string]$PlanName            = '4 CPU, 8GB Memory',
     [string]$NetworkName         = 'OVS dc-demo-dhcp - 25',
+    [string]$IpPoolName          = '',
+    [switch]$ForceDhcp,
     [string]$DomainName          = 'int.hpedemo.se',
     [bool]$EnableUEFI            = $true,
     [int]$DiskSizeGB             = 80,
@@ -85,6 +92,10 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if ($ForceDhcp.IsPresent -and $IpPoolName) {
+    throw "-ForceDhcp and -IpPoolName are mutually exclusive. Specify only one."
+}
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Logging
@@ -408,7 +419,61 @@ function Resolve-NetworkId {
     }
 
     Write-Log "Network resolved: $networkId" -Level SUCCESS
-    return $networkId
+    return [pscustomobject]@{ NetworkId = $networkId; Network = $network }
+}
+
+function Resolve-NetworkIpAssignment {
+    param([Parameter(Mandatory)]$Network)
+
+    # Live-verified against vme.int.hpedemo.se (GET /api/options/zoneNetworkOptions):
+    # each network object carries a single optional "pool" object (id, name) — never an
+    # array/multiple pools — plus "dhcpServer" (bool: is DHCP valid on this network) and
+    # "allowStaticOverride" (bool: is the operator allowed to pick the pool instead of DHCP
+    # when both are available). Example:
+    #   { "name": "OVS dc-demo-mgmt - 20", "dhcpServer": true, "allowStaticOverride": true,
+    #     "pool": { "id": 57, "name": "10.10.20.0/24" } }
+    #   { "name": "OVS dc-demo-dhcp - 25", "dhcpServer": true, "allowStaticOverride": false, "pool": null }
+    $pool            = $Network.pool
+    $dhcpAvailable   = if ($Network.PSObject.Properties.Name -contains 'dhcpServer') { [bool]$Network.dhcpServer } else { $true }
+    $overrideAllowed = if ($Network.PSObject.Properties.Name -contains 'allowStaticOverride') { [bool]$Network.allowStaticOverride } else { $true }
+
+    # Explicit overrides take precedence over auto-detection
+    if ($script:ForceDhcp) {
+        Write-Log "IP assignment: DHCP (forced via -ForceDhcp)." -Level SUCCESS
+        return [pscustomobject]@{ Mode = 'dhcp'; PoolId = $null; PoolName = $null }
+    }
+
+    if ($script:IpPoolName) {
+        if (-not $pool) {
+            throw "IP pool '$script:IpPoolName' requested via -IpPoolName, but network '$($Network.name)' has no IP pool configured."
+        }
+        if ($pool.name -ne $script:IpPoolName) {
+            throw "IP pool '$script:IpPoolName' not found on network '$($Network.name)'. Available pool: '$($pool.name)'."
+        }
+        if ($dhcpAvailable -and -not $overrideAllowed) {
+            Write-Log "Network '$($Network.name)' does not permit static/pool override of DHCP (allowStaticOverride=false) — ignoring -IpPoolName and using DHCP." -Level WARN
+            return [pscustomobject]@{ Mode = 'dhcp'; PoolId = $null; PoolName = $null }
+        }
+        Write-Log "IP assignment: pool '$($pool.name)' (id=$($pool.id)), forced via -IpPoolName." -Level SUCCESS
+        return [pscustomobject]@{ Mode = 'pool'; PoolId = [int]$pool.id; PoolName = $pool.name }
+    }
+
+    # Auto-detect
+    if (-not $pool) {
+        Write-Log "IP assignment: DHCP (no IP pool configured on this network)." -Level SUCCESS
+        return [pscustomobject]@{ Mode = 'dhcp'; PoolId = $null; PoolName = $null }
+    }
+
+    if ($dhcpAvailable -and -not $overrideAllowed) {
+        Write-Log "IP assignment: DHCP (network has pool '$($pool.name)' but allowStaticOverride=false)." -Level SUCCESS
+        return [pscustomobject]@{ Mode = 'dhcp'; PoolId = $null; PoolName = $null }
+    }
+
+    # Either DHCP isn't available (pool is the only option), or both are available and
+    # override is permitted — prefer the pool automatically in both cases.
+    $reason = if ($dhcpAvailable) { 'preferred over DHCP — both are available and override is permitted' } else { 'only option — DHCP is not available on this network' }
+    Write-Log "IP assignment: pool '$($pool.name)' (id=$($pool.id)) — $reason." -Level SUCCESS
+    return [pscustomobject]@{ Mode = 'pool'; PoolId = [int]$pool.id; PoolName = $pool.name }
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -593,6 +658,8 @@ $script:LayoutId          = $LayoutId
 $script:ProvisionTypeCode = $ProvisionTypeCode
 $script:PlanName          = $PlanName
 $script:NetworkName       = $NetworkName
+$script:IpPoolName        = $IpPoolName
+$script:ForceDhcp         = $ForceDhcp.IsPresent
 $script:DatastoreId       = $DatastoreId
 $script:DatastoreName     = $DatastoreName
 
@@ -625,7 +692,9 @@ $planId          = Resolve-ServicePlanId -CloudId $cloudId -LayoutId $layoutId
 $resourcePoolId  = Resolve-ResourcePoolId -CloudId $cloudId
 $datastore       = Resolve-DatastoreId -CloudId $cloudId
 $datastoreId     = $datastore.Id
-$networkId       = Resolve-NetworkId -CloudId $cloudId -ProvisionTypeId $provisionTypeId
+$networkResolved = Resolve-NetworkId -CloudId $cloudId -ProvisionTypeId $provisionTypeId
+$networkId       = $networkResolved.NetworkId
+$ipAssignment    = Resolve-NetworkIpAssignment -Network $networkResolved.Network
 
 # Generate unique VM name: prefix + exactly 5 random digits
 $suffix       = '{0:D5}' -f (Get-Random -Minimum 0 -Maximum 99999)
@@ -661,8 +730,16 @@ $provisionBody = @{
     networkInterfaces = @(
         @{
             network = @{ id = $networkId }
-            ipMode  = 'dhcp'
-        }
+        } + $(
+            if ($ipAssignment.Mode -eq 'pool') {
+                # ipMode='pool' + poolId auto-assigns an IP from the network's IP pool.
+                # ipMode='static' requires an explicit ipAddress and fails with
+                # "You must enter an ip address" if none is supplied - it is not used for pools.
+                @{ ipMode = 'pool'; poolId = $ipAssignment.PoolId }
+            } else {
+                @{ ipMode = 'dhcp' }
+            }
+        )
     )
     volumes           = @(
         @{
@@ -699,6 +776,7 @@ if ($PSCmdlet.ShouldProcess($instanceName, 'Provision Morpheus VM')) {
         Layout           = $LayoutName
         Plan             = $PlanName
         Network          = $NetworkName
+        'IP Assignment'  = if ($ipAssignment.Mode -eq 'pool') { "Pool: $($ipAssignment.PoolName) (id=$($ipAssignment.PoolId))" } else { 'DHCP' }
         Domain           = $DomainName
         Firmware         = if ($EnableUEFI) { 'UEFI' } else { 'BIOS' }
         'Disk Size (GB)' = $DiskSizeGB

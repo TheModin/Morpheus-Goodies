@@ -44,6 +44,8 @@ This provisions a VM named `AAA-NNNNN` (5 random digits) using all default setti
 | `ProvisionTypeCode` | | `kvm` | Provision type code used for network resolution. HVM/KVM always use `kvm`. |
 | `PlanName` | | `4 CPU, 8GB Memory` | Service plan name. Must match exactly. |
 | `NetworkName` | | `OVS dc-demo-dhcp - 25` | Network name to attach the VM NIC to. |
+| `IpPoolName` | | `` | Explicit IP pool name override. If set, the NIC uses this pool instead of auto-detecting. Mutually exclusive with `-ForceDhcp`. |
+| `ForceDhcp` | | `$false` | Explicit override: always use DHCP for the NIC even if the network has pool(s) configured. Mutually exclusive with `-IpPoolName`. |
 | `DomainName` | | `int.hpedemo.se` | DNS domain for the VM hostname. |
 | `EnableUEFI` | | `$true` | `$true` = UEFI firmware, `$false` = Legacy BIOS. |
 | `DiskSizeGB` | | `80` | Root disk size in GB. Must be ≥ the image minimum (~65 GB for the default image). |
@@ -94,6 +96,60 @@ $token = Read-Host -AsSecureString 'Morpheus API token'
     -WhatIf
 ```
 
+### Force a specific IP pool
+
+```powershell
+.\New-MorpheusWindowsVM.ps1 `
+    -MorpheusServer 'morpheus.example.com' `
+    -MorpheusToken  $token `
+    -NetworkName    'OVS dc-demo-static - 25' `
+    -IpPoolName     'dc-demo-static-pool-2'
+```
+
+### Force DHCP on a network that also has IP pool(s)
+
+```powershell
+.\New-MorpheusWindowsVM.ps1 `
+    -MorpheusServer 'morpheus.example.com' `
+    -MorpheusToken  $token `
+    -NetworkName    'OVS dc-demo-static - 25' `
+    -ForceDhcp
+```
+
+---
+
+## IP Pool / DHCP Selection
+
+Some networks are configured with both DHCP and a static IP pool. By default
+(no `-IpPoolName` / `-ForceDhcp` given), the script picks the NIC's IP
+assignment based on the network's `dhcpServer`, `pool`, and
+`allowStaticOverride` fields (as returned by
+`GET /api/options/zoneNetworkOptions`):
+
+| Network configuration | Default behavior |
+| :--- | :--- |
+| No IP pool configured | Uses DHCP |
+| Pool configured, DHCP not available | Uses the pool (only option) |
+| Pool configured, DHCP available, override **not** permitted (`allowStaticOverride=false`) | Uses DHCP |
+| Pool configured, DHCP available, override permitted (`allowStaticOverride=true`) | Uses the pool |
+
+Use `-IpPoolName '<pool name>'` to force the pool non-interactively (throws
+if the network has no pool, if the name doesn't match, or is silently
+downgraded to DHCP with a warning if the network doesn't permit override), or
+`-ForceDhcp` to force DHCP regardless of pool configuration. These two
+parameters are mutually exclusive.
+
+> **Live-verified** against `vme.int.hpedemo.se`: a network can have at most
+> one assigned pool (`network.pool` is a single `{id, name}` object or
+> `null` — never an array/multiple pools). Verified end-to-end with
+> `-WhatIf` for: no-pool → DHCP, pool+DHCP+override-allowed → pool
+> (auto-preferred), `-ForceDhcp` override → DHCP, `-IpPoolName` with a valid
+> name → pool, `-IpPoolName` with an unknown name → throws with the
+> available pool name, `-IpPoolName` on a network with no pool → throws.
+> Also verified with **real (non-`-WhatIf`)** provisioning: the pool branch
+> submits `ipMode='pool'` + `poolId` (not `'static'`, which requires an
+> explicit `ipAddress` and fails with `You must enter an ip address`).
+
 ---
 
 ## How it resolves names to IDs
@@ -110,6 +166,7 @@ The script calls the following Morpheus API endpoints to translate names into ID
 | Service plan | `GET /api/service-plans?zoneId={cloudId}&layoutId={layoutId}` |
 | Resource pool | `GET /api/zones/{cloudId}/resource-pools` (uses first available) |
 | Network | `GET /api/options/zoneNetworkOptions?zoneId={cloudId}&provisionTypeId={id}` |
+| IP assignment (DHCP vs. pool) | Uses `dhcpServer`/`pool`/`allowStaticOverride` fields on the same network object returned above; see [IP Pool / DHCP Selection](#ip-pool--dhcp-selection) |
 | Datastore | `GET /api/options/datastores` (default ID `4`, matched client-side); falls back to an interactive prompt if that ID isn't in the list |
 | **Version check** | `GET /api/setup/check` (unauthenticated, v9+) |
 | **Current user** (for Wiki) | `GET /api/whoami` |
